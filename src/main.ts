@@ -16,6 +16,10 @@ import {
   standardAngleKfFilter,
 } from './filters/angleKf';
 import { robustResidualFilter, standardSmoothingFilter } from './filters/demoFilters';
+import {
+  buildTriAxisDiagnosticsCsv,
+  formatAxisKfDiagnosticSummary,
+} from './filters/diagnosticsExport';
 import { fullImuAttitudeEkfPlaceholder } from './filters/imuEkfInterface';
 import { findNearestFrameIndex, periodicAngleDiff } from './math/angles';
 import type {
@@ -35,6 +39,7 @@ interface AppState {
   dataset: AttitudeDataset;
   filterMode: FilterMode;
   kfMu: number;
+  diagAxis: AxisKey;
   disturbanceConfig: DisturbanceConfig;
   appliedDisturbance: AppliedDisturbance | null;
   seriesMap: Record<DataSourceId, SeriesData>;
@@ -106,7 +111,13 @@ function buildInitialAppHtml(): string {
               </select>
               <label for="input-kf-mu" class="muted-text" id="lbl-kf-mu">μ(演示选值)：</label>
               <input id="input-kf-mu" type="number" step="0.1" min="0.1" value="${DEFAULT_KF_PARAMS.mu}" style="width:62px;" />
-              <button id="btn-export-diag" class="btn btn-sm" type="button">导出诊断CSV</button>
+              <label for="select-diag-axis" class="muted-text">诊断轴：</label>
+              <select id="select-diag-axis">
+                <option value="roll">Roll</option>
+                <option value="pitch" selected>Pitch</option>
+                <option value="yaw">Yaw</option>
+              </select>
+              <button id="btn-export-diag" class="btn btn-sm" type="button">导出三轴诊断CSV</button>
             </div>
           </div>
 
@@ -221,6 +232,7 @@ function main(): void {
     dataset: initialDataset,
     filterMode: 'kf',
     kfMu: DEFAULT_KF_PARAMS.mu,
+    diagAxis: 'pitch',
     disturbanceConfig: {
       enabled: false,
       type: 'spike',
@@ -280,6 +292,7 @@ function main(): void {
   const selectFilterMode = document.getElementById('select-filter-mode') as HTMLSelectElement;
   const inputKfMu = document.getElementById('input-kf-mu') as HTMLInputElement;
   const lblKfMu = document.getElementById('lbl-kf-mu')!;
+  const selectDiagAxis = document.getElementById('select-diag-axis') as HTMLSelectElement;
   const btnExportDiag = document.getElementById('btn-export-diag') as HTMLButtonElement;
   const btnPlayPause = document.getElementById('btn-play-pause') as HTMLButtonElement;
   const btnPrevFrame = document.getElementById('btn-prev-frame') as HTMLButtonElement;
@@ -369,7 +382,8 @@ function main(): void {
 
     inputKfMu.disabled = !isKf;
     lblKfMu.classList.toggle('muted-text', true);
-    btnExportDiag.disabled = !robOut.diagnostics;
+    selectDiagAxis.disabled = !isKf || !robOut.diagnostics;
+    btnExportDiag.disabled = !isKf || !robOut.diagnostics;
     renderLegend();
   }
 
@@ -443,6 +457,32 @@ function main(): void {
     }
   }
 
+  function updateDiagnosticsBar(): void {
+    const times = state.dataset.times;
+    if (times.length === 0) return;
+    const idx = Math.max(0, Math.min(times.length - 1, state.currentIndex));
+    const robDiag = state.seriesMap.filter_robust.diagnostics;
+    if (state.filterMode === 'kf' && robDiag) {
+      const dr = robDiag.roll[idx];
+      const dp = robDiag.pitch[idx];
+      const dy = robDiag.yaw[idx];
+      const psdOk =
+        dr.covPsd && dp.covPsd && dy.covPsd && dr.covSymmetric && dp.covSymmetric && dy.covSymmetric;
+      const axis = state.diagAxis;
+      kfDiagBar.textContent = formatAxisKfDiagnosticSummary(
+        idx,
+        times[idx],
+        axis,
+        state.seriesMap.disturbed[axis][idx],
+        state.seriesMap.filter_robust[axis][idx],
+        robDiag[axis][idx],
+        psdOk
+      );
+    } else {
+      kfDiagBar.textContent = '当前为角度平滑回退模式（无 KF 协方差/创新诊断，不可导出）。';
+    }
+  }
+
   function syncCurrentFrameUI(): void {
     const times = state.dataset.times;
     if (times.length === 0) return;
@@ -512,17 +552,7 @@ function main(): void {
     readingsTbody.innerHTML = rowsHtml;
 
     // Update current-frame Huber KF diagnostics summary
-    const robDiag = state.seriesMap.filter_robust.diagnostics;
-    if (robDiag) {
-      const dr = robDiag.roll[idx];
-      const dp = robDiag.pitch[idx];
-      const dy = robDiag.yaw[idx];
-      const psdOk = dr.covPsd && dp.covPsd && dy.covPsd && dr.covSymmetric && dp.covSymmetric && dy.covSymmetric;
-      kfDiagBar.textContent =
-        `Huber诊断(第${idx + 1}帧): Pitch[pred=${dp.predicted.toFixed(2)}°, ν=${dp.innovation >= 0 ? '+' : ''}${dp.innovation.toFixed(2)}°, e=${dp.normalizedResidual >= 0 ? '+' : ''}${dp.normalizedResidual.toFixed(2)}, w=${dp.weight.toFixed(3)}, R_eff=${dp.rEff.toFixed(2)}, P_diag=(${dp.pDiag[0].toFixed(2)},${dp.pDiag[1].toFixed(2)})] · 三轴协方差对称/半正定=${psdOk ? '正常' : '异常'}`;
-    } else {
-      kfDiagBar.textContent = '当前为角度平滑回退模式（无 KF 协方差/创新诊断）。';
-    }
+    updateDiagnosticsBar();
 
     // 4. Sync Charts
     syncCharts();
@@ -632,40 +662,28 @@ function main(): void {
     }
   });
 
+  selectDiagAxis.addEventListener('change', () => {
+    state.diagAxis = selectDiagAxis.value as AxisKey;
+    updateDiagnosticsBar();
+  });
+
   btnExportDiag.addEventListener('click', () => {
-    const diag = state.seriesMap.filter_robust.diagnostics;
-    if (!diag) return;
-    const times = state.dataset.times;
-    const dist = state.seriesMap.disturbed;
-    const est = state.seriesMap.filter_robust;
-    const lines = [
-      'frame_idx,time_s,pitch_obs_deg,pitch_pred_deg,pitch_nu_deg,pitch_e,pitch_w,pitch_r_eff,pitch_est_deg,pitch_p00,pitch_p11,pitch_cov_sym,pitch_cov_psd',
-    ];
-    for (let i = 0; i < times.length; i++) {
-      const d = diag.pitch[i];
-      lines.push(
-        [
-          i + 1,
-          times[i],
-          dist.pitch[i],
-          d.predicted.toFixed(6),
-          d.innovation.toFixed(6),
-          d.normalizedResidual.toFixed(6),
-          d.weight.toFixed(6),
-          d.rEff.toFixed(6),
-          est.pitch[i].toFixed(6),
-          d.pDiag[0].toFixed(6),
-          d.pDiag[1].toFixed(6),
-          d.covSymmetric,
-          d.covPsd,
-        ].join(',')
-      );
-    }
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const csvText = buildTriAxisDiagnosticsCsv({
+      dataset: state.dataset,
+      filterMode: state.filterMode,
+      filterName: huberAngleKfFilter.name,
+      paramsSummary: state.seriesMap.filter_robust.paramsSummary ?? '',
+      disturbanceConfig: state.disturbanceConfig,
+      appliedDisturbance: state.appliedDisturbance,
+      disturbedSeries: state.seriesMap.disturbed,
+      robustSeries: state.seriesMap.filter_robust,
+    });
+    if (!csvText) return;
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'kf_huber_pitch_diagnostics.csv';
+    a.download = 'kf_huber_triaxis_diagnostics.csv';
     a.click();
     URL.revokeObjectURL(url);
   });

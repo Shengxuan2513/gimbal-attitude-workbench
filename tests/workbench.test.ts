@@ -4,9 +4,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { guessDefaultMapping, parseAndValidateCsv } from '../src/data/csvParser.ts';
+import {
+  evaluateMappingCompleteness,
+  guessDefaultMapping,
+  parseAndValidateCsv,
+} from '../src/data/csvParser.ts';
 import { applyDisturbance } from '../src/data/disturbance.ts';
 import { huberAngleKfFilter, standardAngleKfFilter, DEFAULT_KF_PARAMS } from '../src/filters/angleKf.ts';
+import {
+  buildTriAxisDiagnosticsCsv,
+  formatAxisKfDiagnosticSummary,
+} from '../src/filters/diagnosticsExport.ts';
 import { fullImuAttitudeEkfPlaceholder } from '../src/filters/imuEkfInterface.ts';
 import { buildActiveRotationMatrix, periodicAngleDiff } from '../src/math/angles.ts';
 
@@ -191,4 +199,129 @@ test('Angle KF: w=1 matches standard KF, handles ±180° wrap & unequal dt & PSD
 test('Full IMU EKF interface reports unavailable without body-frame gyro/accel', () => {
   const status = fullImuAttitudeEkfPlaceholder.checkAvailability({ times: [0, 0.5, 1.0] });
   assert.equal(status.available, false);
+});
+
+test('CSV mapping completeness: unmapped disables confirm, completing mapping enables, file/mapping change refreshes', () => {
+  // 1. rpm-only file -> unmapped angle cols -> incomplete
+  const rpmHeaders = ['elapsed_s', 'yaw_rpm', 'roll_rpm', 'pitch_rpm'];
+  const rpmGuess = guessDefaultMapping(rpmHeaders);
+  const statusIncomplete = evaluateMappingCompleteness(true, {
+    timeCol: rpmGuess.timeCol ?? '',
+    rollCol: rpmGuess.rollCol ?? '',
+    pitchCol: rpmGuess.pitchCol ?? '',
+    yawCol: rpmGuess.yawCol ?? '',
+  });
+  assert.equal(statusIncomplete.complete, false);
+  assert.deepEqual(statusIncomplete.missingLabels, ['Roll 列', 'Pitch 列', 'Yaw 列']);
+
+  // 2. Completing mapping manually -> enabled
+  const statusComplete = evaluateMappingCompleteness(true, {
+    timeCol: 'elapsed_s',
+    rollCol: 'custom_r',
+    pitchCol: 'custom_p',
+    yawCol: 'custom_y',
+  });
+  assert.equal(statusComplete.complete, true);
+  assert.equal(statusComplete.missingLabels.length, 0);
+
+  // 3. Clearing one mapping -> disabled again
+  const statusCleared = evaluateMappingCompleteness(true, {
+    timeCol: 'elapsed_s',
+    rollCol: '',
+    pitchCol: 'custom_p',
+    yawCol: 'custom_y',
+  });
+  assert.equal(statusCleared.complete, false);
+  assert.deepEqual(statusCleared.missingLabels, ['Roll 列']);
+});
+
+test('Tri-axis KF diagnostics: R/P/Y have independent actual values, export has 3*N rows, smooth mode blocks export', () => {
+  const rawCsv = fs.readFileSync(NEW_CSV_PATH, 'utf8');
+  const parsed = parseAndValidateCsv(rawCsv, 'gimbal_20261118_222038_position_derived.csv', {
+    timeCol: 'time_s',
+    rollCol: 'roll_deg',
+    pitchCol: 'pitch_deg',
+    yawCol: 'yaw_deg',
+    timeUnit: 's',
+    angleUnit: 'deg',
+    rotationOrder: 'ZYX',
+    axisSigns: { roll: 1, pitch: 1, yaw: 1 },
+  });
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) return;
+
+  const ds = parsed.dataset;
+  const distConfig = {
+    enabled: true,
+    type: 'spike' as const,
+    axis: 'pitch' as const,
+    startTime: 8.0,
+    amplitude: 20,
+    duration: 2.0,
+  };
+  const distRes = applyDisturbance(ds, distConfig);
+  const robOut = huberAngleKfFilter.run(
+    {
+      times: ds.times,
+      roll: distRes.disturbed.roll,
+      pitch: distRes.disturbed.pitch,
+      yaw: distRes.disturbed.yaw,
+    },
+    { mu: 2.0 }
+  );
+
+  // Roll, Pitch, Yaw diagnostics at frame 17 (idx 16) are genuinely distinct
+  const dr16 = robOut.diagnostics!.roll[16];
+  const dp16 = robOut.diagnostics!.pitch[16];
+  const dy16 = robOut.diagnostics!.yaw[16];
+  assert.notEqual(dp16.weight, dr16.weight);
+  assert.notEqual(dy16.predicted, dp16.predicted);
+
+  const summaryYaw = formatAxisKfDiagnosticSummary(
+    16,
+    ds.times[16],
+    'yaw',
+    distRes.disturbed.yaw[16],
+    robOut.yaw[16],
+    dy16,
+    true
+  );
+  assert.match(summaryYaw, /Yaw/);
+  assert.match(summaryYaw, /t=8\.093s/);
+
+  // Export tri-axis CSV in KF mode
+  const csvOut = buildTriAxisDiagnosticsCsv({
+    dataset: ds,
+    filterMode: 'kf',
+    filterName: huberAngleKfFilter.name,
+    paramsSummary: robOut.paramsSummary ?? '',
+    disturbanceConfig: distConfig,
+    appliedDisturbance: distRes.applied,
+    disturbedSeries: distRes.disturbed,
+    robustSeries: robOut,
+  });
+  assert.ok(csvOut !== null);
+  const lines = csvOut!.split('\n');
+  const metaLines = lines.filter((l) => l.startsWith('#'));
+  const dataLines = lines.filter((l) => !l.startsWith('#') && !l.startsWith('frame_idx,'));
+  assert.ok(metaLines.length >= 5);
+  assert.equal(dataLines.length, ds.times.length * 3); // 50 * 3 = 150 rows
+
+  // Verify frame 17 (idx 16) Pitch row in exported CSV
+  const pitchRow17 = dataLines.find((l) => l.startsWith('17,8.093,pitch,'));
+  assert.ok(pitchRow17);
+  assert.ok(pitchRow17!.includes(dp16.weight.toFixed(6)));
+
+  // Smooth fallback mode must NOT export residual KF diagnostics
+  const smoothExport = buildTriAxisDiagnosticsCsv({
+    dataset: ds,
+    filterMode: 'smooth',
+    filterName: 'smooth',
+    paramsSummary: '',
+    disturbanceConfig: distConfig,
+    appliedDisturbance: distRes.applied,
+    disturbedSeries: distRes.disturbed,
+    robustSeries: robOut,
+  });
+  assert.equal(smoothExport, null);
 });

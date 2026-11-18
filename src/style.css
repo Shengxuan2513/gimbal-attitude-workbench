@@ -685,6 +685,15 @@ input[type='number']:focus {
   color: var(--text-muted);
 }
 
+.import-mapping-hint {
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.45);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #fde68a;
+  font-size: 12.5px;
+}
+
 .import-error-box {
   background: rgba(239, 68, 68, 0.14);
   border: 1px solid rgba(239, 68, 68, 0.5);
