@@ -4,24 +4,28 @@ import {
   parseAndValidateSixAxisCsv,
   previewCsv,
 } from '../data/sixAxisParser';
-import type { TimeUnit } from '../types/attitude';
+import { inspectWitMotionBin, type WitMotionBinInspection } from '../data/witMotionBin';
 import type {
   AccelUnit,
   GyroUnit,
   SixAxisDataset,
   SixAxisImportConfig,
   SixAxisTimeBase,
+  SixAxisTimeUnit,
 } from '../types/sixAxis';
 
 export class SixAxisImportModal {
   private overlay: HTMLDivElement;
   private fileInput: HTMLInputElement;
+  private binInput: HTMLInputElement;
   private rawText = '';
   private filename = '';
   private headers: string[] = [];
+  private binInspection: WitMotionBinInspection | null = null;
   private onImported: (dataset: SixAxisDataset) => void;
 
   private timeSelect!: HTMLSelectElement;
+  private hostTimeSelect!: HTMLSelectElement;
   private gxSelect!: HTMLSelectElement;
   private gySelect!: HTMLSelectElement;
   private gzSelect!: HTMLSelectElement;
@@ -43,6 +47,7 @@ export class SixAxisImportModal {
   private mappingHintBox!: HTMLDivElement;
   private errorBox!: HTMLDivElement;
   private fileInfoLabel!: HTMLSpanElement;
+  private binInfoLabel!: HTMLSpanElement;
   private confirmBtn!: HTMLButtonElement;
 
   constructor(onImported: (dataset: SixAxisDataset) => void) {
@@ -55,12 +60,17 @@ export class SixAxisImportModal {
     this.fileInput.accept = '.csv,text/csv';
     this.fileInput.className = 'hidden';
 
+    this.binInput = document.createElement('input');
+    this.binInput.type = 'file';
+    this.binInput.accept = '.bin,application/octet-stream';
+    this.binInput.className = 'hidden';
+
     this.overlay.innerHTML = `
       <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-label="导入六轴原始 IMU CSV">
         <div class="modal-header">
           <div>
             <h3>导入六轴原始 IMU CSV（本地检查与隔离加载）</h3>
-            <p class="muted-text">WT61PC 无磁力计配置：仅接收机体系三轴角速度与三轴比力。失败或取消不会污染已有位置角或六轴数据。</p>
+            <p class="muted-text">支持 WitMotion 中文表头与常规六轴 CSV；可选配套 .bin 包完整性校验。失败或取消不会污染已有数据。</p>
           </div>
           <button type="button" class="btn btn-ghost" data-action="close">✕</button>
         </div>
@@ -68,7 +78,12 @@ export class SixAxisImportModal {
         <div class="modal-body">
           <div class="import-file-row">
             <button type="button" class="btn btn-primary" data-action="pick-file">选择六轴 CSV 文件</button>
-            <span class="file-info-label">未选择文件</span>
+            <span class="file-info-label">未选择 CSV 文件</span>
+          </div>
+          <div class="import-file-row">
+            <button type="button" class="btn" data-action="pick-bin">可选：选择配套 .bin 文件</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-action="clear-bin">清除 .bin</button>
+            <span class="bin-info-label muted-text">未选择配套 .bin（仅 CSV 模式，不验证二进制完整性）</span>
           </div>
 
           <div class="import-preview-section">
@@ -80,15 +95,29 @@ export class SixAxisImportModal {
 
           <div class="import-mapping-grid">
             <label>
-              <span>时间列</span>
+              <span>主时间列（优先片上时间）</span>
               <select data-field="timeCol"></select>
+            </label>
+            <label>
+              <span>电脑时间列（可选，仅追溯不去重）</span>
+              <select data-field="hostTimeCol"></select>
             </label>
             <label>
               <span>时间单位（必须显式确认）</span>
               <select data-field="timeUnit">
                 <option value="">-- 请选择单位（未确认） --</option>
+                <option value="hms">时分秒 (HH:mm:ss.SSS，兼容 2000-00-00)</option>
                 <option value="s">秒 (s)</option>
                 <option value="ms">毫秒 (ms)</option>
+              </select>
+            </label>
+            <label>
+              <span>时间基准来源</span>
+              <select data-field="timeBase">
+                <option value="onchip_hms">片上时间 (HH:mm:ss.SSS)</option>
+                <option value="device_sample">设备采样时间戳</option>
+                <option value="host_rx">上位机接收时间（含串口抖动）</option>
+                <option value="unknown">待核实（未确认硬件同步）</option>
               </select>
             </label>
             <label>
@@ -107,15 +136,6 @@ export class SixAxisImportModal {
                 <option value="g">重力倍数 (g, 9.80665 m/s²)</option>
               </select>
             </label>
-            <label>
-              <span>时间基准来源</span>
-              <select data-field="timeBase">
-                <option value="unknown">待核实（未确认硬件同步）</option>
-                <option value="device_sample">设备采样时间戳</option>
-                <option value="host_rx">上位机接收时间（含串口抖动）</option>
-              </select>
-            </label>
-            <div></div>
 
             <label><span>gx 列</span><select data-field="gxCol"></select></label>
             <label><span>gx 方向</span><select data-field="signGx"><option value="1">+1</option><option value="-1">-1</option></select></label>
@@ -134,7 +154,7 @@ export class SixAxisImportModal {
 
           <label class="confirm-checkbox-row">
             <input type="checkbox" data-field="confirmedPhysicalMeaning" />
-            <span>我已确认：所选六通道为机体系原始角速度与含重力比力（非关节 rpm、非欧拉角速率、非去重力线加速度）。</span>
+            <span>我已确认：所选六通道为机体系原始角速度与含重力比力（非关节 rpm、非模块姿态角、非去重力线加速度）。</span>
           </label>
 
           <div class="import-mapping-hint hidden" role="status"></div>
@@ -150,8 +170,10 @@ export class SixAxisImportModal {
 
     document.body.appendChild(this.overlay);
     document.body.appendChild(this.fileInput);
+    document.body.appendChild(this.binInput);
 
     this.timeSelect = this.overlay.querySelector('[data-field="timeCol"]')!;
+    this.hostTimeSelect = this.overlay.querySelector('[data-field="hostTimeCol"]')!;
     this.gxSelect = this.overlay.querySelector('[data-field="gxCol"]')!;
     this.gySelect = this.overlay.querySelector('[data-field="gyCol"]')!;
     this.gzSelect = this.overlay.querySelector('[data-field="gzCol"]')!;
@@ -173,6 +195,7 @@ export class SixAxisImportModal {
     this.mappingHintBox = this.overlay.querySelector('.import-mapping-hint')!;
     this.errorBox = this.overlay.querySelector('.import-error-box')!;
     this.fileInfoLabel = this.overlay.querySelector('.file-info-label')!;
+    this.binInfoLabel = this.overlay.querySelector('.bin-info-label')!;
     this.confirmBtn = this.overlay.querySelector('[data-action="confirm"]')!;
 
     this.overlay.querySelectorAll('[data-action="close"]').forEach((btn) => {
@@ -182,6 +205,16 @@ export class SixAxisImportModal {
     this.overlay
       .querySelector('[data-action="pick-file"]')!
       .addEventListener('click', () => this.fileInput.click());
+
+    this.overlay
+      .querySelector('[data-action="pick-bin"]')!
+      .addEventListener('click', () => this.binInput.click());
+
+    this.overlay.querySelector('[data-action="clear-bin"]')!.addEventListener('click', () => {
+      this.binInspection = null;
+      this.binInput.value = '';
+      this.binInfoLabel.textContent = '未选择配套 .bin（仅 CSV 模式，不验证二进制完整性）';
+    });
 
     for (const el of [
       this.timeSelect,
@@ -213,16 +246,30 @@ export class SixAxisImportModal {
       if (!file) return;
       this.loadFile(file);
     });
+
+    this.binInput.addEventListener('change', () => {
+      const file = this.binInput.files?.[0];
+      if (!file) return;
+      this.loadBinFile(file);
+    });
   }
 
   public open(): void {
     this.errorBox.classList.add('hidden');
-    this.errorBox.innerHTML = '';
+    this.errorBox.replaceChildren();
     this.overlay.classList.remove('hidden');
   }
 
   public close(): void {
     this.overlay.classList.add('hidden');
+  }
+
+  private async loadBinFile(file: File): Promise<void> {
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const info = inspectWitMotionBin(buf, file.name);
+    this.binInspection = info;
+    this.binInfoLabel.textContent =
+      `${file.name}（时间包=${info.timePacketCount}, 加速度包=${info.accelPacketCount}, 角速度包=${info.gyroPacketCount}, 完整组=${info.completeGroupCount}, 校验错=${info.badChecksumCount}, 尾部截断=${info.truncatedTailBytes}B）`;
   }
 
   private async loadFile(file: File): Promise<void> {
@@ -233,31 +280,43 @@ export class SixAxisImportModal {
 
     this.fileInfoLabel.textContent = `${file.name}（共 ${preview.totalDataRows} 行数据，${preview.headers.length} 列）`;
     this.errorBox.classList.add('hidden');
-    this.errorBox.innerHTML = '';
+    this.errorBox.replaceChildren();
     this.confirmMeaningCheckbox.checked = false;
 
     if (this.headers.length === 0) {
-      this.previewContainer.innerHTML = '<div class="empty-hint">文件为空，无法解析表头。</div>';
+      const hint = document.createElement('div');
+      hint.className = 'empty-hint';
+      hint.textContent = '文件为空，无法解析表头。';
+      this.previewContainer.replaceChildren(hint);
       this.updateState();
       return;
     }
 
-    const ths = preview.headers.map((h) => `<th>${this.escapeHtml(h)}</th>`).join('');
-    const trs = preview.rows
-      .map(
-        (r) =>
-          `<tr>${preview.headers
-            .map((_, i) => `<td>${this.escapeHtml(r[i] ?? '')}</td>`)
-            .join('')}</tr>`
-      )
-      .join('');
-    this.previewContainer.innerHTML = `<table class="preview-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+    // Safe DOM construction (never interpolating raw CSV headers into innerHTML)
+    const table = document.createElement('table');
+    table.className = 'preview-table';
+    const thead = document.createElement('thead');
+    const headTr = document.createElement('tr');
+    for (const h of preview.headers) {
+      const th = document.createElement('th');
+      th.textContent = h;
+      headTr.appendChild(th);
+    }
+    thead.appendChild(headTr);
+    table.appendChild(thead);
 
-    const optsHtml =
-      '<option value="">-- 未映射（请选择） --</option>' +
-      this.headers
-        .map((h) => `<option value="${this.escapeHtml(h)}">${this.escapeHtml(h)}</option>`)
-        .join('');
+    const tbody = document.createElement('tbody');
+    for (const r of preview.rows) {
+      const tr = document.createElement('tr');
+      for (let i = 0; i < preview.headers.length; i++) {
+        const td = document.createElement('td');
+        td.textContent = r[i] ?? '';
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    this.previewContainer.replaceChildren(table);
 
     for (const sel of [
       this.timeSelect,
@@ -268,11 +327,20 @@ export class SixAxisImportModal {
       this.aySelect,
       this.azSelect,
     ]) {
-      sel.innerHTML = optsHtml;
+      sel.replaceChildren(new Option('-- 未映射（请选择） --', ''));
+      for (const h of this.headers) {
+        sel.appendChild(new Option(h, h));
+      }
+    }
+
+    this.hostTimeSelect.replaceChildren(new Option('-- 无（不追溯电脑时间） --', ''));
+    for (const h of this.headers) {
+      this.hostTimeSelect.appendChild(new Option(h, h));
     }
 
     const guessed = guessSixAxisMapping(this.headers);
     this.timeSelect.value = guessed.timeCol ?? '';
+    this.hostTimeSelect.value = guessed.hostTimeCol ?? '';
     this.gxSelect.value = guessed.gxCol ?? '';
     this.gySelect.value = guessed.gyCol ?? '';
     this.gzSelect.value = guessed.gzCol ?? '';
@@ -282,6 +350,9 @@ export class SixAxisImportModal {
     this.timeUnitSelect.value = guessed.timeUnit ?? '';
     this.gyroUnitSelect.value = guessed.gyroUnit ?? '';
     this.accelUnitSelect.value = guessed.accelUnit ?? '';
+    if (guessed.timeBase) {
+      this.timeBaseSelect.value = guessed.timeBase;
+    }
 
     this.updateState();
   }
@@ -289,13 +360,14 @@ export class SixAxisImportModal {
   private getCurrentConfig(): SixAxisImportConfig {
     return {
       timeCol: this.timeSelect.value,
+      hostTimeCol: this.hostTimeSelect.value || undefined,
       gxCol: this.gxSelect.value,
       gyCol: this.gySelect.value,
       gzCol: this.gzSelect.value,
       axCol: this.axSelect.value,
       ayCol: this.aySelect.value,
       azCol: this.azSelect.value,
-      timeUnit: this.timeUnitSelect.value as TimeUnit | '',
+      timeUnit: this.timeUnitSelect.value as SixAxisTimeUnit | '',
       gyroUnit: this.gyroUnitSelect.value as GyroUnit | '',
       accelUnit: this.accelUnitSelect.value as AccelUnit | '',
       gyroSigns: {
@@ -329,25 +401,28 @@ export class SixAxisImportModal {
   private handleConfirm(): void {
     if (!this.rawText) return;
     const cfg = this.getCurrentConfig();
-    const result = parseAndValidateSixAxisCsv(this.rawText, this.filename, cfg, false);
+    const result = parseAndValidateSixAxisCsv(
+      this.rawText,
+      this.filename,
+      cfg,
+      false,
+      this.binInspection
+    );
     if ('errors' in result) {
       this.errorBox.classList.remove('hidden');
-      this.errorBox.innerHTML = `
-        <strong>六轴 CSV 检查未通过（当前已有数据保持不变）：</strong>
-        <ul>${result.errors.map((e) => `<li>${this.escapeHtml(e)}</li>`).join('')}</ul>
-      `;
+      const strong = document.createElement('strong');
+      strong.textContent = '六轴 CSV 检查未通过（当前已有数据保持不变）：';
+      const ul = document.createElement('ul');
+      for (const e of result.errors) {
+        const li = document.createElement('li');
+        li.textContent = e;
+        ul.appendChild(li);
+      }
+      this.errorBox.replaceChildren(strong, ul);
       return;
     }
 
     this.onImported(result.dataset);
     this.close();
-  }
-
-  private escapeHtml(str: string): string {
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   }
 }

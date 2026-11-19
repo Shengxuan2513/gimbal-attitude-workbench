@@ -11,13 +11,17 @@ import {
 } from '../src/data/csvParser.ts';
 import { applyDisturbance } from '../src/data/disturbance.ts';
 import {
+  buildNormalizedSixAxisCsv,
+  buildSixAxisQualityReport,
   createSimulatedSixAxisDataset,
   evaluateSixAxisCompleteness,
   guessSixAxisMapping,
   parseAndValidateSixAxisCsv,
+  parseHmsTimestampSec,
   SIX_AXIS_TEMPLATE_CSV,
   STANDARD_GRAVITY_M_S2,
 } from '../src/data/sixAxisParser.ts';
+import { inspectWitMotionBin } from '../src/data/witMotionBin.ts';
 import { huberAngleKfFilter, standardAngleKfFilter, DEFAULT_KF_PARAMS } from '../src/filters/angleKf.ts';
 import {
   buildTriAxisDiagnosticsCsv,
@@ -446,4 +450,255 @@ test('Six-axis parser: converts ms/deg_s/g accurately, rejects non-finite/overfl
     true
   );
   assert.equal(tplRes.ok, true);
+});
+
+test('WitMotion Chinese headers: maps on-chip time, accel(g), gyro(deg/s), preserves duplicate host time & invalid date 2000-00-00', () => {
+  const headers = [
+    '时间',
+    '设备名称',
+    '片上时间()',
+    '加速度X(g)',
+    '加速度Y(g)',
+    '加速度Z(g)',
+    '角速度X(°/s)',
+    '角速度Y(°/s)',
+    '角速度Z(°/s)',
+    '角度X(°)',
+    '磁场X(ʯt)',
+  ];
+  const g = guessSixAxisMapping(headers);
+  assert.equal(g.timeCol, '片上时间()');
+  assert.equal(g.hostTimeCol, '时间');
+  assert.equal(g.timeUnit, 'hms');
+  assert.equal(g.gyroUnit, 'deg_s');
+  assert.equal(g.accelUnit, 'g');
+  assert.equal(g.axCol, '加速度X(g)');
+  assert.equal(g.gxCol, '角速度X(°/s)');
+
+  assert.equal(parseHmsTimestampSec('2000-00-00 00:36:31.640')?.toFixed(3), '2191.640');
+
+  const csv = [
+    headers.join(','),
+    ' 20:53:14.620,COM9, 2000-00-00 00:36:31.650, -0.9395, 0.1196, 0.3281, 0.3052, 0.0610, -0.0610, 20.468, 0.000',
+    ' 20:53:14.620,COM9, 2000-00-00 00:36:31.660, -0.9395, 0.1216, 0.3291, 0.6104, 0.0610, 0.1831, 20.468, 0.000',
+    ' 20:53:14.620,COM9, 2000-00-00 00:36:31.670, -0.9380, 0.1200, 0.3300, 0.0000, 0.1221, 0.0000, 20.468, 0.000',
+  ].join('\n');
+
+  const res = parseAndValidateSixAxisCsv(csv, 'wt_test.csv', {
+    timeCol: g.timeCol!,
+    hostTimeCol: g.hostTimeCol,
+    gxCol: g.gxCol!,
+    gyCol: g.gyCol!,
+    gzCol: g.gzCol!,
+    axCol: g.axCol!,
+    ayCol: g.ayCol!,
+    azCol: g.azCol!,
+    timeUnit: 'hms',
+    gyroUnit: 'deg_s',
+    accelUnit: 'g',
+    gyroSigns: { x: 1, y: 1, z: 1 },
+    accelSigns: { x: 1, y: 1, z: 1 },
+    timeBase: 'onchip_hms',
+    confirmedPhysicalMeaning: true,
+  });
+
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    // Must NOT deduplicate by repeated computer time 20:53:14.620
+    assert.equal(res.dataset.times.length, 3);
+    assert.equal(res.dataset.programChecks.duplicateHostTimeCount, 2);
+    assert.equal(res.dataset.programChecks.binVerified, false);
+    assert.ok(Math.abs(res.dataset.programChecks.effectiveHz - 100) < 1e-6);
+
+    const normCsv = buildNormalizedSixAxisCsv(res.dataset);
+    assert.equal(normCsv.split('\n').length, 4); // header + 3 rows
+    const report = JSON.parse(buildSixAxisQualityReport(res.dataset));
+    assert.equal(report.counts.duplicateHostTimeCount, 2);
+    assert.equal(report.binInspection, null);
+  }
+});
+
+test('Six-axis HMS time: handles normal midnight rollover, rejects device reboot and time regression', () => {
+  const baseCfg = {
+    timeCol: 't',
+    gxCol: 'gx',
+    gyCol: 'gy',
+    gzCol: 'gz',
+    axCol: 'ax',
+    ayCol: 'ay',
+    azCol: 'az',
+    timeUnit: 'hms' as const,
+    gyroUnit: 'rad_s' as const,
+    accelUnit: 'm_s2' as const,
+    gyroSigns: { x: 1 as const, y: 1 as const, z: 1 as const },
+    accelSigns: { x: 1 as const, y: 1 as const, z: 1 as const },
+    timeBase: 'onchip_hms' as const,
+    confirmedPhysicalMeaning: true,
+  };
+
+  // Normal midnight rollover: 23:59:59.990 -> 00:00:00.010
+  const rolloverCsv = [
+    't,gx,gy,gz,ax,ay,az',
+    '2000-00-00 23:59:59.990,0,0,0,0,0,9.81',
+    '2000-00-00 00:00:00.010,0,0,0,0,0,9.81',
+  ].join('\n');
+  const rollRes = parseAndValidateSixAxisCsv(rolloverCsv, 'rollover.csv', baseCfg);
+  assert.equal(rollRes.ok, true);
+  if (rollRes.ok) {
+    assert.equal(rollRes.dataset.programChecks.midnightRolloverCount, 1);
+    assert.ok(Math.abs(rollRes.dataset.times[1] - 0.02) < 1e-9);
+  }
+
+  // Device reboot: 00:36:40.000 -> 00:00:00.010 (must NOT treat as midnight rollover)
+  const rebootCsv = [
+    't,gx,gy,gz,ax,ay,az',
+    '2000-00-00 00:36:40.000,0,0,0,0,0,9.81',
+    '2000-00-00 00:00:00.010,0,0,0,0,0,9.81',
+  ].join('\n');
+  const rebootRes = parseAndValidateSixAxisCsv(rebootCsv, 'reboot.csv', baseCfg);
+  assert.equal(rebootRes.ok, false);
+  if (!rebootRes.ok) {
+    assert.match(rebootRes.errors[0], /第 3 行.*重启/);
+  }
+
+  // Regression: 00:36:40.000 -> 00:36:39.500
+  const regCsv = [
+    't,gx,gy,gz,ax,ay,az',
+    '2000-00-00 00:36:40.000,0,0,0,0,0,9.81',
+    '2000-00-00 00:36:39.500,0,0,0,0,0,9.81',
+  ].join('\n');
+  const regRes = parseAndValidateSixAxisCsv(regCsv, 'reg.csv', baseCfg);
+  assert.equal(regRes.ok, false);
+  if (!regRes.ok) {
+    assert.match(regRes.errors[0], /第 3 行.*逆序/);
+  }
+});
+
+test('WitMotion .bin inspector: detects truncated tail packet, checksum errors, missing packet, and excludes incomplete group', () => {
+  function makePkt(type: number): number[] {
+    const p = [0x55, type, 1, 2, 3, 4, 5, 6, 7, 8, 0];
+    let sum = 0;
+    for (let i = 0; i < 10; i++) sum += p[i];
+    p[10] = sum & 0xff;
+    return p;
+  }
+
+  // 3 time, 3 accel, 2 gyro + 1 truncated 10-byte gyro at EOF
+  const bytes = new Uint8Array([
+    ...makePkt(0x50),
+    ...makePkt(0x51),
+    ...makePkt(0x52),
+    ...makePkt(0x50),
+    ...makePkt(0x51),
+    ...makePkt(0x52),
+    ...makePkt(0x50),
+    ...makePkt(0x51),
+    0x55,
+    0x52,
+    0x06,
+    0x00,
+    0x02,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+  ]);
+  const info = inspectWitMotionBin(bytes, 'test.bin');
+  assert.equal(info.timePacketCount, 3);
+  assert.equal(info.accelPacketCount, 3);
+  assert.equal(info.gyroPacketCount, 2);
+  assert.equal(info.completeGroupCount, 2);
+  assert.equal(info.badChecksumCount, 0);
+  assert.equal(info.truncatedTailBytes, 10);
+  assert.match(info.truncatedTailPacketType ?? '', /0x52/);
+
+  // Bad checksum packet
+  const badPkt = makePkt(0x51);
+  badPkt[10] ^= 0xff;
+  const badInfo = inspectWitMotionBin(new Uint8Array(badPkt), 'bad.bin');
+  assert.equal(badInfo.badChecksumCount, 1);
+  assert.equal(badInfo.completeGroupCount, 0);
+
+  // Integrating with 3-row CSV excludes trailing 1 incomplete group
+  const csv3 = [
+    't,gx,gy,gz,ax,ay,az',
+    '0.00,0,0,0,0,0,9.81',
+    '0.01,0,0,0,0,0,9.81',
+    '0.02,0,0,0,0,0,9.81',
+  ].join('\n');
+  const parsed = parseAndValidateSixAxisCsv(
+    csv3,
+    'test.csv',
+    {
+      timeCol: 't',
+      gxCol: 'gx',
+      gyCol: 'gy',
+      gzCol: 'gz',
+      axCol: 'ax',
+      ayCol: 'ay',
+      azCol: 'az',
+      timeUnit: 's',
+      gyroUnit: 'rad_s',
+      accelUnit: 'm_s2',
+      gyroSigns: { x: 1, y: 1, z: 1 },
+      accelSigns: { x: 1, y: 1, z: 1 },
+      timeBase: 'device_sample',
+      confirmedPhysicalMeaning: true,
+    },
+    false,
+    info
+  );
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.dataset.programChecks.totalCsvRows, 3);
+    assert.equal(parsed.dataset.programChecks.validCompleteGroups, 2);
+    assert.equal(parsed.dataset.programChecks.excludedCount, 1);
+    assert.equal(parsed.dataset.times.length, 2);
+  }
+});
+
+test('Six-axis validation: rejects NaN/Infinity, duplicate time, missing col, duplicate col mapping, and unit overflow', () => {
+  const baseCfg = {
+    timeCol: 't',
+    gxCol: 'gx',
+    gyCol: 'gy',
+    gzCol: 'gz',
+    axCol: 'ax',
+    ayCol: 'ay',
+    azCol: 'az',
+    timeUnit: 's' as const,
+    gyroUnit: 'rad_s' as const,
+    accelUnit: 'g' as const,
+    gyroSigns: { x: 1 as const, y: 1 as const, z: 1 as const },
+    accelSigns: { x: 1 as const, y: 1 as const, z: 1 as const },
+    timeBase: 'device_sample' as const,
+    confirmedPhysicalMeaning: true,
+  };
+
+  // NaN / Infinity
+  const nanCsv = 't,gx,gy,gz,ax,ay,az\n0,0,0,0,0,0,1\n0.01,NaN,0,0,0,0,Infinity\n';
+  const nanRes = parseAndValidateSixAxisCsv(nanCsv, 'nan.csv', baseCfg);
+  assert.equal(nanRes.ok, false);
+  if (!nanRes.ok) assert.match(nanRes.errors[0], /第 3 行/);
+
+  // Duplicate time
+  const dupTimeCsv = 't,gx,gy,gz,ax,ay,az\n0,0,0,0,0,0,1\n0,0,0,0,0,0,1\n';
+  const dupRes = parseAndValidateSixAxisCsv(dupTimeCsv, 'dup.csv', baseCfg);
+  assert.equal(dupRes.ok, false);
+  if (!dupRes.ok) assert.match(dupRes.errors[0], /第 3 行.*重复/);
+
+  // Missing mapped column in header
+  const missRes = parseAndValidateSixAxisCsv('t,gx,gy\n0,0,0\n0.01,0,0\n', 'miss.csv', baseCfg);
+  assert.equal(missRes.ok, false);
+
+  // Duplicate column mapping
+  const dupMap = evaluateSixAxisCompleteness(true, { ...baseCfg, gyCol: 'gx' });
+  assert.equal(dupMap.complete, false);
+
+  // Unit-conversion overflow (1e308 * 9.80665 -> Infinity)
+  const ovfCsv = 't,gx,gy,gz,ax,ay,az\n0,0,0,0,0,0,1\n0.01,0,0,0,0,0,1e308\n';
+  const ovfRes = parseAndValidateSixAxisCsv(ovfCsv, 'ovf.csv', baseCfg);
+  assert.equal(ovfRes.ok, false);
+  if (!ovfRes.ok) assert.match(ovfRes.errors[0], /第 3 行.*非有限/);
 });

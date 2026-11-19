@@ -217,26 +217,38 @@ export class CsvImportModal {
       return;
     }
 
-    // Render preview table
-    const ths = preview.headers.map((h) => `<th>${this.escapeHtml(h)}</th>`).join('');
-    const trs = preview.rows
-      .map(
-        (r) =>
-          `<tr>${preview.headers
-            .map((_, i) => `<td>${this.escapeHtml(r[i] ?? '')}</td>`)
-            .join('')}</tr>`
-      )
-      .join('');
-    this.previewContainer.innerHTML = `<table class="preview-table"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+    // Render preview table safely via DOM textContent (never interpolating raw CSV into innerHTML)
+    const table = document.createElement('table');
+    table.className = 'preview-table';
+    const thead = document.createElement('thead');
+    const headTr = document.createElement('tr');
+    for (const h of preview.headers) {
+      const th = document.createElement('th');
+      th.textContent = h;
+      headTr.appendChild(th);
+    }
+    thead.appendChild(headTr);
+    table.appendChild(thead);
 
-    // Populate column selects (with explicit "未映射" option)
-    const optsHtml =
-      '<option value="">-- 未映射（请选择） --</option>' +
-      this.headers
-        .map((h) => `<option value="${this.escapeHtml(h)}">${this.escapeHtml(h)}</option>`)
-        .join('');
+    const tbody = document.createElement('tbody');
+    for (const r of preview.rows) {
+      const tr = document.createElement('tr');
+      for (let i = 0; i < preview.headers.length; i++) {
+        const td = document.createElement('td');
+        td.textContent = r[i] ?? '';
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    this.previewContainer.replaceChildren(table);
+
+    // Populate column selects safely via Option(..., ...)
     for (const sel of [this.timeSelect, this.rollSelect, this.pitchSelect, this.yawSelect]) {
-      sel.innerHTML = optsHtml;
+      sel.replaceChildren(new Option('-- 未映射（请选择） --', ''));
+      for (const h of this.headers) {
+        sel.appendChild(new Option(h, h));
+      }
     }
 
     const guessed = guessDefaultMapping(this.headers);

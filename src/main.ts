@@ -14,6 +14,8 @@ import {
 import { createDemoDataset, createPositionDerivedDataset } from './data/demoData';
 import { applyDisturbance, computeDeviationFromOriginal } from './data/disturbance';
 import {
+  buildNormalizedSixAxisCsv,
+  buildSixAxisQualityReport,
   createSimulatedSixAxisDataset,
   SIX_AXIS_TEMPLATE_CSV,
 } from './data/sixAxisParser';
@@ -255,6 +257,8 @@ function buildInitialAppHtml(): string {
               <button id="btn-six-import" class="btn btn-primary btn-sm" type="button">导入六轴原始 CSV</button>
               <button id="btn-six-load-sim" class="btn btn-sm" type="button">加载模拟六轴样例（仅格式演示）</button>
               <button id="btn-six-download-tpl" class="btn btn-sm" type="button">下载六轴 Schema 模板 CSV</button>
+              <button id="btn-six-export-csv" class="btn btn-sm" type="button" disabled>导出规范化七列 CSV</button>
+              <button id="btn-six-export-report" class="btn btn-sm" type="button" disabled>导出质量与元数据报告</button>
             </div>
             <div class="topbar-meta">
               <span class="meta-pill">文件：<strong id="six-meta-filename">未加载</strong></span>
@@ -441,6 +445,8 @@ function main(): void {
   const sixProgramCheckBody = document.getElementById('six-program-check-body')!;
   const sixCheckBadge = document.getElementById('six-check-badge')!;
   const sixStatsTbody = document.getElementById('six-stats-tbody')!;
+  const btnSixExportCsv = document.getElementById('btn-six-export-csv') as HTMLButtonElement;
+  const btnSixExportReport = document.getElementById('btn-six-export-report') as HTMLButtonElement;
 
   function switchWorkspaceTab(tab: WorkspaceTab): void {
     state.activeTab = tab;
@@ -464,39 +470,49 @@ function main(): void {
   function renderSixAxisView(): void {
     const ds = state.sixAxisDataset;
     if (!ds) {
+      btnSixExportCsv.disabled = true;
+      btnSixExportReport.disabled = true;
       sixAxisCharts.update(null);
       return;
     }
 
+    btnSixExportCsv.disabled = false;
+    btnSixExportReport.disabled = false;
+
     sixMetaFilename.textContent = ds.filename;
     sixMetaSource.textContent = ds.sourceStatusLabel;
     sixMetaSourcePill.classList.toggle('warning', true);
-    sixMetaCount.textContent = `${ds.times.length} 帧 (${ds.programChecks.durationSec.toFixed(2)}s)`;
+    sixMetaCount.textContent = `${ds.programChecks.validCompleteGroups} / ${ds.programChecks.totalCsvRows} 帧 (${ds.programChecks.durationSec.toFixed(2)}s)`;
 
     const cfg = ds.importConfig;
-    const timeBaseLabel =
-      cfg.timeBase === 'device_sample'
-        ? '设备采样时间戳'
-        : cfg.timeBase === 'host_rx'
-          ? '上位机接收时间（含串口抖动）'
-          : '待核实（未确认硬件同步）';
+    const chk = ds.programChecks;
+    const timeBaseLabel = chk.timeSourceLabel;
 
     sixUserConfirmBody.innerHTML = `
-      <div><strong>数据类型：</strong>${ds.isSimulatedSample ? '模拟样例（仅格式演示，非实测）' : '本地导入六轴原始 CSV（来源待核实）'}</div>
-      <div><strong>映射列：</strong>时间=${cfg.timeCol} ｜ 陀螺=(${cfg.gxCol}, ${cfg.gyCol}, ${cfg.gzCol}) ｜ 比力=(${cfg.axCol}, ${cfg.ayCol}, ${cfg.azCol})</div>
-      <div><strong>显式单位：</strong>时间=${cfg.timeUnit} ｜ 角速度=${cfg.gyroUnit} ｜ 比力=${cfg.accelUnit}（已内部换算为 s, rad/s, m/s²）</div>
+      <div><strong>数据类型：</strong>${ds.isSimulatedSample ? '模拟样例（仅格式演示，非实测）' : '本地导入六轴原始 CSV（来源及标定待确认）'}</div>
+      <div><strong>映射列：</strong>主时间=${cfg.timeCol}${cfg.hostTimeCol ? `（电脑时间=${cfg.hostTimeCol}，仅追溯不去重）` : ''} ｜ 陀螺=(${cfg.gxCol}, ${cfg.gyCol}, ${cfg.gzCol}) ｜ 比力=(${cfg.axCol}, ${cfg.ayCol}, ${cfg.azCol})</div>
+      <div><strong>显式单位：</strong>时间=${cfg.timeUnit} ｜ 角速度=${cfg.gyroUnit}→rad/s ｜ 比力=${cfg.accelUnit}→m/s²（不改变原始文件）</div>
       <div><strong>轴向符号：</strong>陀螺(${cfg.gyroSigns.x > 0 ? '+' : '-'},${cfg.gyroSigns.y > 0 ? '+' : '-'},${cfg.gyroSigns.z > 0 ? '+' : '-'}) ｜ 比力(${cfg.accelSigns.x > 0 ? '+' : '-'},${cfg.accelSigns.y > 0 ? '+' : '-'},${cfg.accelSigns.z > 0 ? '+' : '-'})</div>
-      <div><strong>时间基准：</strong>${timeBaseLabel} ｜ <strong>物理含义确认：</strong>${cfg.confirmedPhysicalMeaning ? '已确认（非rpm/非去重力线加速度）' : '未确认'}</div>
+      <div><strong>时间基准：</strong>${timeBaseLabel} ｜ <strong>物理含义确认：</strong>${cfg.confirmedPhysicalMeaning ? '已确认（非rpm/非模块姿态角/非去重力线加速度）' : '未确认'}</div>
     `;
 
-    const chk = ds.programChecks;
-    sixCheckBadge.textContent = '格式与显式条件通过';
+    sixCheckBadge.textContent = chk.binVerified ? 'CSV + .bin 检查通过' : '仅 CSV 检查通过';
+    const excludedHtml =
+      chk.excludedCount > 0
+        ? `<div class="hit-status active"><strong>排除记录：</strong>${chk.excludedCount} 条 — ${chk.excludedReasons.join('；')}</div>`
+        : `<div><strong>排除记录：</strong>0 条（全部 ${chk.totalCsvRows} 行均为有效完整组）</div>`;
+    const binHtml = ds.binInspection
+      ? `<div><strong>配套 .bin 检查：</strong>${ds.binInspection.filename}（时间包=${ds.binInspection.timePacketCount}，加速度包=${ds.binInspection.accelPacketCount}，角速度包=${ds.binInspection.gyroPacketCount}，校验失败=${ds.binInspection.badChecksumCount}，尾部截断=${ds.binInspection.truncatedTailBytes}B）</div>`
+      : `<div><strong>配套 .bin 检查：</strong>未提供（仅 CSV 模式：未验证二进制包边界与通道同步）</div>`;
+
     sixProgramCheckBody.innerHTML = `
       <div><strong>检查声明：</strong>${chk.summaryBadge}</div>
-      <div><strong>样本与时长：</strong>${chk.sampleCount} 帧 · 总时长 ${chk.durationSec.toFixed(3)}s</div>
-      <div><strong>真实时间间隔：</strong>dt_min=${chk.dtMin.toFixed(4)}s · dt_med=${chk.dtMed.toFixed(4)}s · dt_max=${chk.dtMax.toFixed(4)}s</div>
-      <div><strong>数值与单调性：</strong>有限性=${chk.allFinite ? '通过' : '失败'} · 严格递增=${chk.strictlyIncreasingTime ? '通过' : '失败'}</div>
+      <div><strong>总行数 / 有效完整组：</strong>${chk.totalCsvRows} 行 / ${chk.validCompleteGroups} 组 · 总时长 ${chk.durationSec.toFixed(3)}s</div>
+      ${excludedHtml}
+      ${binHtml}
+      <div><strong>间隔与有效频率：</strong>dt_min=${chk.dtMin.toFixed(4)}s · dt_med=${chk.dtMed.toFixed(4)}s · dt_max=${chk.dtMax.toFixed(4)}s · 有效频率 ${chk.effectiveHz.toFixed(2)} Hz（数据缺口 ${chk.gapCount} 处；相邻重复电脑时间 ${chk.duplicateHostTimeCount} 个已保留未去重）</div>
       <div><strong>辅助比力范数 |f_b|：</strong>均值 ${chk.accelNormMean.toFixed(3)} ± ${chk.accelNormStd.toFixed(3)} m/s²（范围 ${chk.accelNormMin.toFixed(3)}～${chk.accelNormMax.toFixed(3)}）</div>
+      <div><strong>待确认项：</strong>${chk.unconfirmedItems.join('；')}</div>
     `;
 
     const chList: Array<{ label: string; stat: typeof chk.channels.gx }> = [
@@ -915,6 +931,30 @@ function main(): void {
     const a = document.createElement('a');
     a.href = url;
     a.download = 'six_axis_imu_template.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  btnSixExportCsv.addEventListener('click', () => {
+    if (!state.sixAxisDataset) return;
+    const csvText = buildNormalizedSixAxisCsv(state.sixAxisDataset);
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'normalized_six_axis_imu.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  btnSixExportReport.addEventListener('click', () => {
+    if (!state.sixAxisDataset) return;
+    const reportJson = buildSixAxisQualityReport(state.sixAxisDataset);
+    const blob = new Blob([reportJson], { type: 'application/json;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'six_axis_quality_report.json';
     a.click();
     URL.revokeObjectURL(url);
   });

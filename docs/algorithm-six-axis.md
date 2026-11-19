@@ -54,7 +54,7 @@ F_c = \begin{bmatrix} -[\hat{\omega}]_\times & -I_3 \\ 0 & 0 \end{bmatrix}, \qqu
 G_c = \begin{bmatrix} -I_3 & 0 \\ 0 & I_3 \end{bmatrix}, \qquad
 \hat{\omega} = \omega_m - \bar{b}_g
 $$
-连续噪声功率谱密度 $Q_c = \operatorname{diag}(S_g, S_{bg})$（$3\times 3$ 对角阵，**不是**离散每帧方差）。
+连续噪声功率谱密度 $Q_c = \operatorname{diag}(S_g, S_{bg}) \in \mathbb{R}^{6\times 6}$（由两个 $3\times 3$ 块 $S_g, S_{bg}$ 构成的分块对角阵，**不是** $3\times 3$ 矩阵，也不是离散每帧方差）。
 
 2. **【保留】真实时间间隔离散传播**：使用当前帧与上一帧的真实有效时间间隔 $\Delta t_k = t_k - t_{k-1} > 0$（禁止固定为 0.5 s 或假定同步）：
 $$
@@ -113,21 +113,34 @@ $$
    e_x(\xi) = L_p^{-1}\xi \in \mathbb{R}^6, \qquad
    e_y(\xi) = L_r^{-1}\big[z_k - h(q(\xi))\big] \in \mathbb{R}^3
    $$
-2. **【保留】Huber 损失与非平方权重**：
+2. **【保留】Huber 损失、完整鲁棒目标与非平方权重**：
    $$
    \rho_\mu(e) = \begin{cases} \tfrac{1}{2}e^2, & |e| \le \mu \\ \mu|e| - \tfrac{1}{2}\mu^2, & |e| > \mu \end{cases}, \qquad
    w_\mu(e) = \begin{cases} 1, & |e| \le \mu \\ \mu / |e|, & |e| > \mu \end{cases}
    $$
-   $e = 0$ 时按连续极限取 $w = 1$；**禁止**用 $(\mu/|e|)^2$ 替代。状态侧与观测侧权重矩阵 $W_x = \operatorname{diag}(w_{\mu_x}(e_{x,i}))$、$W_y = \operatorname{diag}(w_{\mu_y}(e_{y,j}))$，对应调权协方差 $\widetilde{P} = L_p W_x^{-1} L_p^T$、$\widetilde{R} = L_r W_y^{-1} L_r^T$。
-3. **【保留】固定先验 IRLS 求解**：第 $i$ 次迭代使用 $SO(3)$ 右雅可比 $J_r(\phi_i)$：
+   $e = 0$ 时按连续极限取 $w = 1$；**禁止**用 $(\mu/|e|)^2$ 替代。完整双侧白化鲁棒目标函数为：
+   $$
+   J(\xi) = \sum_{i=1}^{6} \rho_{\mu_x}(e_{x,i}(\xi)) + \sum_{j=1}^{3} \rho_{\mu_y}(e_{y,j}(\xi))
+   $$
+   状态侧与观测侧权重矩阵 $W_x = \operatorname{diag}(w_{\mu_x}(e_{x,i})) \in \mathbb{R}^{6\times 6}$、$W_y = \operatorname{diag}(w_{\mu_y}(e_{y,j})) \in \mathbb{R}^{3\times 3}$，对应调权协方差 $\widetilde{P} = L_p W_x^{-1} L_p^T$、$\widetilde{R} = L_r W_y^{-1} L_r^T$。
+3. **【保留】固定先验 IRLS 求解（含 $\xi$ 初始化、更新、右雅可比与 Armijo 判据）**：
+   - 初始化 $\xi_0 = 0_{6\times 1}$。第 $i$ 次迭代使用 $SO(3)$ 右雅可比 $J_r(\phi_i)$：
+   $$
+   J_r(\phi) = I_3 - \frac{1-\cos\alpha}{\alpha^2}[\phi]_\times + \frac{\alpha-\sin\alpha}{\alpha^3}[\phi]_\times^2, \qquad \alpha = \|\phi\|
+   $$
+   当 $\alpha \to 0$ 时使用小角度级数 $J_r(\phi) \approx I_3 - \frac{1}{2}[\phi]_\times + \frac{1}{6}[\phi]_\times^2$。
    $$
    H_i = \begin{bmatrix} [h(q_i)]_\times J_r(\phi_i) & 0_{3\times 3} \end{bmatrix}, \qquad
    A_i = L_p^{-T} W_{x,i} L_p^{-1}, \qquad
    B_i = L_r^{-T} W_{y,i} L_r^{-1}, \qquad
    r_i = z_k - h(q_i)
    $$
-   求解正定方程 $(A_i + H_i^T B_i H_i)\eta_i = H_i^T B_i r_i - A_i \xi_i$（用 Cholesky 分解求解，禁止显式求逆），并按以下求解器控制与失败恢复规则执行：
-   - **步长控制**：若 $\|\eta_\theta\| > 0.1\,\text{rad}$，先缩放到 $0.1 / \|\eta_\theta\|$；从 $s = 1$ 开始最多 Armijo 回溯 12 次（每次减半，$c_1 = 10^{-4}$）。
+   求解正定方程 $(A_i + H_i^T B_i H_i)\eta_i = H_i^T B_i r_i - A_i \xi_i$（用 Cholesky 分解求解，禁止显式求逆），并按 $\xi_{i+1} = \xi_i + s_i \eta_i$ 更新：
+   - **步长控制与 Armijo 判据**：若 $\|\eta_\theta\| > 0.1\,\text{rad}$，先将初始 $s$ 限制为 $0.1 / \|\eta_\theta\|$；从该初始 $s$（或 $s=1$）开始最多回溯 12 次（每次减半），满足 Armijo 充分下降条件
+     $$
+     J(\xi_i + s\eta_i) \le J(\xi_i) + c_1 s\,\nabla J(\xi_i)^T \eta_i, \qquad c_1 = 10^{-4}
+     $$
+     后接受（其中 $\nabla J(\xi_i) = A_i \xi_i - H_i^T B_i r_i$）。
    - **停止条件（建议数值配置）**：$\|\Delta\phi\| < 10^{-7}\,\text{rad}$、$\|\Delta\beta\| < 10^{-8}\,\text{rad/s}$ 且相对目标变化 $\le 10^{-6}$；最大迭代 15 次。
    - **失败恢复**：若不收敛、Cholesky 失败、出现非有限值、回溯失败或总姿态修正 $\|\phi\| > 30^\circ$（局部有效域），**放弃本帧观测更新**，恢复先验 $(\bar{q}^-, \bar{b}_g^-, P^-)$ 并记录具体失败原因，禁止静默接受最后一步。
 4. **【保留】误差注入与协方差坐标重置**：收敛后 $\xi^* = [\phi^{*T}, \beta^{*T}]^T$：
@@ -174,6 +187,9 @@ $$
 | 真实姿态精度 / 恢复时间 / RMSE | 验收结果 | **尚无实测结果** | 今晚采集真实六轴日志后才可执行；无独立真值时仅能报告相对偏差 |
 
 **分层验证矩阵（待今晚实测后执行）**：
-- 正常工况：静止对齐、单轴转动（Roll/Pitch/Yaw）、多轴组合转动。
-- 异常与边界工况：单帧比力尖峰、窗口持续偏置、慢漂移、快速剧烈转动、强动态平动比力、串口丢包／时间跳变／时钟漂移、陀螺饱和或故障。
-- 参考评价要求：仅可使用独立标定的外部参考评价绝对误差；参考未知或与被测同源时，只报告相对日志偏差。
+- **正常工况**：静止对齐、单轴转动（Roll/Pitch/Yaw）、多轴组合转动。
+- **异常与边界工况**：单帧比力尖峰、窗口持续偏置、慢漂移、快速剧烈转动、强动态平动比力、串口丢包／时间跳变／时钟漂移、陀螺饱和或故障。
+- **定量验证指标与重复实验要求**：
+  - 指标：姿态旋转误差 $\text{RMSE}$、峰值误差 $\max|\Delta\theta|$、异常注入后的恢复时间 $T_{\text{rec}}$、稳态误差、归一化创新一致性（NIS / NEES）。
+  - 重复实验：每组故障注入／Monte Carlo 实验至少重复 $N \ge 5$ 次独立采样或固定随机种子对照，同时报告均值与最坏值，开发集与验收测试集严格分离。
+  - 参考评价要求：仅可使用独立标定的外部参考评价绝对误差；参考未知或与被测同源时，只报告相对日志偏差。
