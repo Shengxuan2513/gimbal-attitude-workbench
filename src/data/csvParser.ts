@@ -54,6 +54,35 @@ function parseCsvLine(line: string): string[] {
   return result;
 }
 
+export interface MappingValidationStatus {
+  complete: boolean;
+  missingLabels: string[];
+  message: string;
+}
+
+export function evaluateMappingCompleteness(
+  hasHeaders: boolean,
+  mapping: Pick<CsvImportConfig, 'timeCol' | 'rollCol' | 'pitchCol' | 'yawCol'>
+): MappingValidationStatus {
+  if (!hasHeaders) {
+    return { complete: false, missingLabels: [], message: '' };
+  }
+  const missingLabels: string[] = [];
+  if (!mapping.timeCol) missingLabels.push('时间列');
+  if (!mapping.rollCol) missingLabels.push('Roll 列');
+  if (!mapping.pitchCol) missingLabels.push('Pitch 列');
+  if (!mapping.yawCol) missingLabels.push('Yaw 列');
+
+  if (missingLabels.length > 0) {
+    return {
+      complete: false,
+      missingLabels,
+      message: `请先完成必要列映射：缺少 ${missingLabels.join('、')}（不可将转速或加速度列作为角度）。`,
+    };
+  }
+  return { complete: true, missingLabels: [], message: '' };
+}
+
 export function previewCsv(text: string, maxRows = 6): CsvPreview {
   const lines = splitLines(text);
   if (lines.length === 0) {

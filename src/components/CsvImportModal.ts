@@ -1,4 +1,5 @@
 import {
+  evaluateMappingCompleteness,
   guessDefaultMapping,
   parseAndValidateCsv,
   previewCsv,
@@ -30,6 +31,7 @@ export class CsvImportModal {
   private signPitchSelect!: HTMLSelectElement;
   private signYawSelect!: HTMLSelectElement;
   private previewContainer!: HTMLDivElement;
+  private mappingHintBox!: HTMLDivElement;
   private errorBox!: HTMLDivElement;
   private fileInfoLabel!: HTMLSpanElement;
   private confirmBtn!: HTMLButtonElement;
@@ -135,6 +137,7 @@ export class CsvImportModal {
             </label>
           </div>
 
+          <div class="import-mapping-hint hidden" role="status"></div>
           <div class="import-error-box hidden" role="alert"></div>
         </div>
 
@@ -159,6 +162,7 @@ export class CsvImportModal {
     this.signPitchSelect = this.overlay.querySelector('[data-field="signPitch"]')!;
     this.signYawSelect = this.overlay.querySelector('[data-field="signYaw"]')!;
     this.previewContainer = this.overlay.querySelector('.preview-table-wrap')!;
+    this.mappingHintBox = this.overlay.querySelector('.import-mapping-hint')!;
     this.errorBox = this.overlay.querySelector('.import-error-box')!;
     this.fileInfoLabel = this.overlay.querySelector('.file-info-label')!;
     this.confirmBtn = this.overlay.querySelector('[data-action="confirm"]')!;
@@ -172,6 +176,13 @@ export class CsvImportModal {
       .addEventListener('click', () => this.fileInput.click());
 
     this.confirmBtn.addEventListener('click', () => this.handleConfirm());
+
+    for (const sel of [this.timeSelect, this.rollSelect, this.pitchSelect, this.yawSelect]) {
+      sel.addEventListener('change', () => {
+        this.errorBox.classList.add('hidden');
+        this.updateMappingState();
+      });
+    }
 
     this.fileInput.addEventListener('change', () => {
       const file = this.fileInput.files?.[0];
@@ -201,8 +212,8 @@ export class CsvImportModal {
     this.errorBox.innerHTML = '';
 
     if (this.headers.length === 0) {
-      this.confirmBtn.disabled = true;
       this.previewContainer.innerHTML = '<div class="empty-hint">文件为空，无法解析表头。</div>';
+      this.updateMappingState();
       return;
     }
 
@@ -236,7 +247,24 @@ export class CsvImportModal {
     if (guessed.timeUnit) this.timeUnitSelect.value = guessed.timeUnit;
     if (guessed.angleUnit) this.angleUnitSelect.value = guessed.angleUnit;
 
-    this.confirmBtn.disabled = false;
+    this.updateMappingState();
+  }
+
+  private updateMappingState(): void {
+    const status = evaluateMappingCompleteness(this.headers.length > 0, {
+      timeCol: this.timeSelect.value,
+      rollCol: this.rollSelect.value,
+      pitchCol: this.pitchSelect.value,
+      yawCol: this.yawSelect.value,
+    });
+    this.confirmBtn.disabled = !status.complete;
+    if (status.message) {
+      this.mappingHintBox.textContent = status.message;
+      this.mappingHintBox.classList.remove('hidden');
+    } else {
+      this.mappingHintBox.textContent = '';
+      this.mappingHintBox.classList.add('hidden');
+    }
   }
 
   private handleConfirm(): void {
