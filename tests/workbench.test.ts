@@ -10,6 +10,14 @@ import {
   parseAndValidateCsv,
 } from '../src/data/csvParser.ts';
 import { applyDisturbance } from '../src/data/disturbance.ts';
+import {
+  createSimulatedSixAxisDataset,
+  evaluateSixAxisCompleteness,
+  guessSixAxisMapping,
+  parseAndValidateSixAxisCsv,
+  SIX_AXIS_TEMPLATE_CSV,
+  STANDARD_GRAVITY_M_S2,
+} from '../src/data/sixAxisParser.ts';
 import { huberAngleKfFilter, standardAngleKfFilter, DEFAULT_KF_PARAMS } from '../src/filters/angleKf.ts';
 import {
   buildTriAxisDiagnosticsCsv,
@@ -324,4 +332,118 @@ test('Tri-axis KF diagnostics: R/P/Y have independent actual values, export has 
     robustSeries: robOut,
   });
   assert.equal(smoothExport, null);
+});
+
+test('Six-axis mapping: never mis-maps rpm/deg_s2/position, requires explicit units and physical-meaning confirmation', () => {
+  const excelHeaders = [
+    'elapsed_s',
+    'yaw_rpm',
+    'roll_rpm',
+    'pitch_rpm',
+    'ax_deg_s2',
+    'roll_deg',
+  ];
+  const badGuess = guessSixAxisMapping(excelHeaders);
+  assert.equal(badGuess.gxCol, '');
+  assert.equal(badGuess.axCol, '');
+
+  const imuHeaders = ['time_ms', 'gx_deg_s', 'gy_deg_s', 'gz_deg_s', 'ax_g', 'ay_g', 'az_g'];
+  const goodGuess = guessSixAxisMapping(imuHeaders);
+  assert.equal(goodGuess.timeCol, 'time_ms');
+  assert.equal(goodGuess.timeUnit, 'ms');
+  assert.equal(goodGuess.gyroUnit, 'deg_s');
+  assert.equal(goodGuess.accelUnit, 'g');
+
+  const incomplete = evaluateSixAxisCompleteness(true, {
+    timeCol: 'time_ms',
+    gxCol: 'gx_deg_s',
+    gyCol: 'gy_deg_s',
+    gzCol: 'gz_deg_s',
+    axCol: 'ax_g',
+    ayCol: 'ay_g',
+    azCol: 'az_g',
+    timeUnit: 'ms',
+    gyroUnit: 'deg_s',
+    accelUnit: '',
+    confirmedPhysicalMeaning: false,
+  });
+  assert.equal(incomplete.complete, false);
+  assert.ok(incomplete.missingItems.includes('比力单位'));
+  assert.ok(incomplete.missingItems.includes('物理含义确认勾选'));
+});
+
+test('Six-axis parser: converts ms/deg_s/g accurately, rejects non-finite/overflow/out-of-order, preserves simulated flag', () => {
+  const csv = [
+    'time_ms,gx_deg_s,gy_deg_s,gz_deg_s,ax_g,ay_g,az_g',
+    '1000,180,0,0,0,0,1',
+    '1020,180,90,0,0,0,1',
+  ].join('\n');
+
+  const res = parseAndValidateSixAxisCsv(csv, 'imu_test.csv', {
+    timeCol: 'time_ms',
+    gxCol: 'gx_deg_s',
+    gyCol: 'gy_deg_s',
+    gzCol: 'gz_deg_s',
+    axCol: 'ax_g',
+    ayCol: 'ay_g',
+    azCol: 'az_g',
+    timeUnit: 'ms',
+    gyroUnit: 'deg_s',
+    accelUnit: 'g',
+    gyroSigns: { x: -1, y: 1, z: 1 },
+    accelSigns: { x: 1, y: 1, z: 1 },
+    timeBase: 'device_sample',
+    confirmedPhysicalMeaning: true,
+  });
+
+  assert.equal(res.ok, true);
+  if (res.ok) {
+    assert.equal(res.dataset.times[0], 0);
+    assert.ok(Math.abs(res.dataset.times[1] - 0.02) < 1e-12);
+    assert.ok(Math.abs(res.dataset.gx[0] - -Math.PI) < 1e-6);
+    assert.ok(Math.abs(res.dataset.gy[1] - Math.PI / 2) < 1e-6);
+    assert.ok(Math.abs(res.dataset.az[0] - STANDARD_GRAVITY_M_S2) < 1e-6);
+    assert.equal(res.dataset.isSimulatedSample, false);
+  }
+
+  // Overflow / non-finite check
+  const badCsv = [
+    'time_s,gx_rad_s,gy_rad_s,gz_rad_s,ax_m_s2,ay_m_s2,az_m_s2',
+    '-1e308,0,0,0,0,0,9.81',
+    '1e308,0,0,0,0,0,9.81',
+  ].join('\n');
+  const badRes = parseAndValidateSixAxisCsv(badCsv, 'bad.csv', {
+    timeCol: 'time_s',
+    gxCol: 'gx_rad_s',
+    gyCol: 'gy_rad_s',
+    gzCol: 'gz_rad_s',
+    axCol: 'ax_m_s2',
+    ayCol: 'ay_m_s2',
+    azCol: 'az_m_s2',
+    timeUnit: 's',
+    gyroUnit: 'rad_s',
+    accelUnit: 'm_s2',
+    gyroSigns: { x: 1, y: 1, z: 1 },
+    accelSigns: { x: 1, y: 1, z: 1 },
+    timeBase: 'unknown',
+    confirmedPhysicalMeaning: true,
+  });
+  assert.equal(badRes.ok, false);
+  if (!badRes.ok) {
+    assert.match(badRes.errors[0], /第 3 行/);
+  }
+
+  // Simulated sample & template
+  const sim = createSimulatedSixAxisDataset();
+  assert.equal(sim.isSimulatedSample, true);
+  assert.equal(sim.times.length, 251);
+  assert.ok(Math.abs(sim.programChecks.accelNormMean - STANDARD_GRAVITY_M_S2) < 0.05);
+
+  const tplRes = parseAndValidateSixAxisCsv(
+    SIX_AXIS_TEMPLATE_CSV,
+    'six_axis_imu_template.csv',
+    sim.importConfig,
+    true
+  );
+  assert.equal(tplRes.ok, true);
 });

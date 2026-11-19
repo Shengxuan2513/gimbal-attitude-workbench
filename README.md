@@ -32,12 +32,22 @@
   - 导出文件包含 `#` 开头的元数据头（当前算法、参数、数据来源文件／说明、坐标系约定及干扰配置），以及 `frame_idx, time_s, axis, obs_deg, pred_deg, est_deg, nu_deg, e, w, r_eff_deg2, p_angle_deg2, p_rate_deg2_s2, cov_symmetric, cov_psd` 共 `N × 3` 行三轴完整数据（`roll` / `pitch` / `yaw` 均为各自独立递推结果）。
   - **限制**：切换至「角度平滑（旧演示回退）」模式时无 KF 协方差／创新诊断，界面明确提示并禁用导出，不会导出残留的旧 KF 结果。
 
-## 4. 测试、构建与预览
+## 4. 六轴数据准备与检查（WT61PC 无磁配置）
+
+- 在顶栏可切换 **「位置角演示链路」** 与 **「六轴数据准备与检查」**，两条数据路径状态完全隔离；同时提供 **「算法文档」「变更清单」「采集指南」** 本地离线查看入口：
+  - [docs/algorithm-six-axis.md](docs/algorithm-six-axis.md)：六轴无磁 ESKF + 双侧白化 Huber 主方案。
+  - [docs/algorithm-changes.md](docs/algorithm-changes.md)：相对原 PDF 与九轴补充审阅稿的逐条变更清单。
+  - [docs/six-axis-capture-guide.md](docs/six-axis-capture-guide.md)：今晚 WT61PC 六轴实测采集指南。
+- 六轴区域支持原始 CSV 预览、7 列映射（时间 + 3 轴角速度 + 3 轴比力）、单位与轴向显式确认、物理含义勾选、格式与单调性检查、Schema 模板下载及原始通道波形展示；**完整六轴 ESKF 尚未接入前，不驱动三维姿态模型，也不冒充完成姿态解算**。
+
+## 5. 测试、构建、预览与安全回退
 
 ```bash
 cd D:\gimbal-attitude-workbench
 npm install
-npm test          # 运行 7 项核心算法/CSV/符号/KF 单元测试
+npm test          # 运行核心算法/CSV/六轴检查单元测试
 npm run build     # TypeScript 检查 + Vite 生产打包 (输出至 dist/)
 npm run preview   # 生产构建产物本地预览
 ```
+
+**安全回退说明**：若需回退本轮「六轴文档与准备界面」提交而不丢失本地未提交工作，请使用 `git revert <commit_sha>` 生成反向提交，避免使用 `git reset --hard`。

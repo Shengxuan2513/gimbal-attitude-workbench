@@ -1,6 +1,9 @@
 import './style.css';
 import { AttitudeCharts } from './components/AttitudeCharts';
 import { CsvImportModal } from './components/CsvImportModal';
+import { DocsModal, type DocTabId } from './components/DocsModal';
+import { SixAxisCharts } from './components/SixAxisCharts';
+import { SixAxisImportModal } from './components/SixAxisImportModal';
 import { Viewport3D } from './components/Viewport3D';
 import {
   CURSOR_COLOR,
@@ -10,6 +13,10 @@ import {
 } from './constants/seriesStyle';
 import { createDemoDataset, createPositionDerivedDataset } from './data/demoData';
 import { applyDisturbance, computeDeviationFromOriginal } from './data/disturbance';
+import {
+  createSimulatedSixAxisDataset,
+  SIX_AXIS_TEMPLATE_CSV,
+} from './data/sixAxisParser';
 import {
   DEFAULT_KF_PARAMS,
   huberAngleKfFilter,
@@ -32,11 +39,15 @@ import type {
   SeriesData,
   SourceDeviationStats,
 } from './types/attitude';
+import type { SixAxisDataset } from './types/sixAxis';
 
 type FilterMode = 'kf' | 'smooth';
+type WorkspaceTab = 'position' | 'six_axis';
 
 interface AppState {
+  activeTab: WorkspaceTab;
   dataset: AttitudeDataset;
+  sixAxisDataset: SixAxisDataset | null;
   filterMode: FilterMode;
   kfMu: number;
   diagAxis: AxisKey;
@@ -58,18 +69,27 @@ function buildInitialAppHtml(): string {
       <header class="topbar">
         <div class="topbar-left">
           <h1 class="app-title">三轴云台姿态可视化实验台</h1>
+          <div class="workspace-tabs" role="tablist" aria-label="数据链路切换">
+            <button id="tab-btn-position" class="btn btn-sm btn-primary" type="button" role="tab" aria-selected="true">位置角演示链路</button>
+            <button id="tab-btn-six-axis" class="btn btn-sm" type="button" role="tab" aria-selected="false">六轴数据准备与检查</button>
+          </div>
           <div class="topbar-actions">
-            <button id="btn-import-csv" class="btn btn-primary" type="button">导入 CSV</button>
-            <button id="btn-load-new" class="btn" type="button">加载新数据</button>
-            <button id="btn-load-demo" class="btn" type="button">加载示例</button>
+            <button id="btn-doc-algo" class="btn btn-sm" type="button">算法文档</button>
+            <button id="btn-doc-changes" class="btn btn-sm" type="button">变更清单</button>
+            <button id="btn-doc-capture" class="btn btn-sm" type="button">采集指南</button>
           </div>
         </div>
-        <div class="topbar-meta">
+        <div class="topbar-meta" id="position-meta-bar">
+          <button id="btn-import-csv" class="btn btn-primary btn-sm" type="button">导入 CSV</button>
+          <button id="btn-load-new" class="btn btn-sm" type="button">加载新数据</button>
+          <button id="btn-load-demo" class="btn btn-sm" type="button">加载示例</button>
           <span class="meta-pill">文件：<strong id="meta-filename">-</strong></span>
           <span id="meta-source-pill" class="meta-pill">来源：<strong id="meta-source">-</strong></span>
           <span class="meta-pill">样本数：<strong id="meta-count">0</strong></span>
         </div>
       </header>
+
+      <div id="view-position" class="workspace-view">
 
       <section class="upper-grid">
         <div class="panel-card">
@@ -219,6 +239,80 @@ function buildInitialAppHtml(): string {
           <div class="chart-box"><canvas id="chart-yaw"></canvas></div>
         </div>
       </section>
+      </div>
+
+      <div id="view-six-axis" class="workspace-view hidden">
+        <section class="panel-card six-axis-banner">
+          <div class="panel-header">
+            <h2 class="panel-title">六轴原始 IMU 数据准备与检查（WT61PC 无磁配置）</h2>
+            <span class="convention-badge unconfirmed">完整六轴 ESKF 尚未接入 · 本轮不宣称完成</span>
+          </div>
+          <div class="ref-note">
+            当前链路与「位置角演示链路」完全隔离：仅用于检查机体系原始三轴角速度（rad/s）与三轴比力（m/s²）。WT61PC 无磁力计数据；Yaw 为相对零方向且可能漂移；真实原始日志待今晚采集；无独立姿态真值参考。<strong>严禁使用标量角度 KF、平滑算法或原始速度/比力直接驱动 3D 姿态模型。</strong>
+          </div>
+          <div class="six-axis-toolbar">
+            <div class="topbar-actions">
+              <button id="btn-six-import" class="btn btn-primary btn-sm" type="button">导入六轴原始 CSV</button>
+              <button id="btn-six-load-sim" class="btn btn-sm" type="button">加载模拟六轴样例（仅格式演示）</button>
+              <button id="btn-six-download-tpl" class="btn btn-sm" type="button">下载六轴 Schema 模板 CSV</button>
+            </div>
+            <div class="topbar-meta">
+              <span class="meta-pill">文件：<strong id="six-meta-filename">未加载</strong></span>
+              <span id="six-meta-source-pill" class="meta-pill warning">状态：<strong id="six-meta-source">等待导入六轴原始 CSV</strong></span>
+              <span class="meta-pill">样本数：<strong id="six-meta-count">0</strong></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="upper-grid">
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2 class="panel-title">用户确认信息（导入配置）</h2>
+              <span class="muted-text">人工确认与程序检查严格分离</span>
+            </div>
+            <div id="six-user-confirm-body" class="six-info-list">
+              <div class="muted-text">尚未导入六轴数据。请在导入弹窗中显式确认列映射、单位、轴向符号、时间基准与物理含义。</div>
+            </div>
+          </div>
+
+          <div class="panel-card">
+            <div class="panel-header">
+              <h2 class="panel-title">程序检查结果（格式与显式条件）</h2>
+              <span id="six-check-badge" class="convention-badge unconfirmed">待检查</span>
+            </div>
+            <div id="six-program-check-body" class="six-info-list">
+              <div class="muted-text">尚未执行检查。检查通过仅代表格式与显式条件满足，不代表传感器来源已验证、时间已硬件同步或噪声已标定。</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="charts-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">六轴原始通道波形与统计（非姿态解算输出）</h2>
+            <span class="muted-text">仅展示机体系原始 ω_b 与 f_b；完整六轴 ESKF 接入前不驱动三维姿态</span>
+          </div>
+          <div class="charts-stack">
+            <div class="chart-box six-chart-box"><canvas id="six-chart-gyro"></canvas></div>
+            <div class="chart-box six-chart-box"><canvas id="six-chart-accel"></canvas></div>
+          </div>
+          <div class="readings-wrap">
+            <table class="readings-table">
+              <thead>
+                <tr>
+                  <th>通道</th>
+                  <th>最小值</th>
+                  <th>最大值</th>
+                  <th>均值</th>
+                  <th>标准差</th>
+                </tr>
+              </thead>
+              <tbody id="six-stats-tbody">
+                <tr><td colspan="5" class="muted-text" style="text-align:center;">暂无六轴通道数据</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </div>
     </div>
   `;
 }
@@ -229,7 +323,9 @@ function main(): void {
 
   const initialDataset = createDemoDataset();
   const state: AppState = {
+    activeTab: 'position',
     dataset: initialDataset,
+    sixAxisDataset: null,
     filterMode: 'kf',
     kfMu: DEFAULT_KF_PARAMS.mu,
     diagAxis: 'pitch',
@@ -319,6 +415,114 @@ function main(): void {
   const importModal = new CsvImportModal((newDataset) => {
     loadDataset(newDataset);
   });
+
+  // Six-Axis Charts, Modal & Docs Modal (completely isolated from positionState)
+  const sixAxisCharts = new SixAxisCharts({
+    gyro: document.getElementById('six-chart-gyro') as HTMLCanvasElement,
+    accel: document.getElementById('six-chart-accel') as HTMLCanvasElement,
+  });
+  const sixAxisImportModal = new SixAxisImportModal((sixDs) => {
+    state.sixAxisDataset = sixDs;
+    renderSixAxisView();
+  });
+  const docsModal = new DocsModal();
+
+  const tabBtnPosition = document.getElementById('tab-btn-position') as HTMLButtonElement;
+  const tabBtnSixAxis = document.getElementById('tab-btn-six-axis') as HTMLButtonElement;
+  const viewPosition = document.getElementById('view-position')!;
+  const viewSixAxis = document.getElementById('view-six-axis')!;
+  const positionMetaBar = document.getElementById('position-meta-bar')!;
+
+  const sixMetaFilename = document.getElementById('six-meta-filename')!;
+  const sixMetaSource = document.getElementById('six-meta-source')!;
+  const sixMetaSourcePill = document.getElementById('six-meta-source-pill')!;
+  const sixMetaCount = document.getElementById('six-meta-count')!;
+  const sixUserConfirmBody = document.getElementById('six-user-confirm-body')!;
+  const sixProgramCheckBody = document.getElementById('six-program-check-body')!;
+  const sixCheckBadge = document.getElementById('six-check-badge')!;
+  const sixStatsTbody = document.getElementById('six-stats-tbody')!;
+
+  function switchWorkspaceTab(tab: WorkspaceTab): void {
+    state.activeTab = tab;
+    const isPos = tab === 'position';
+    viewPosition.classList.toggle('hidden', !isPos);
+    viewSixAxis.classList.toggle('hidden', isPos);
+    positionMetaBar.classList.toggle('hidden', !isPos);
+
+    tabBtnPosition.classList.toggle('btn-primary', isPos);
+    tabBtnPosition.setAttribute('aria-selected', String(isPos));
+    tabBtnSixAxis.classList.toggle('btn-primary', !isPos);
+    tabBtnSixAxis.setAttribute('aria-selected', String(!isPos));
+
+    if (!isPos) {
+      sixAxisCharts.renderAll();
+    } else {
+      charts.renderAll();
+    }
+  }
+
+  function renderSixAxisView(): void {
+    const ds = state.sixAxisDataset;
+    if (!ds) {
+      sixAxisCharts.update(null);
+      return;
+    }
+
+    sixMetaFilename.textContent = ds.filename;
+    sixMetaSource.textContent = ds.sourceStatusLabel;
+    sixMetaSourcePill.classList.toggle('warning', true);
+    sixMetaCount.textContent = `${ds.times.length} 帧 (${ds.programChecks.durationSec.toFixed(2)}s)`;
+
+    const cfg = ds.importConfig;
+    const timeBaseLabel =
+      cfg.timeBase === 'device_sample'
+        ? '设备采样时间戳'
+        : cfg.timeBase === 'host_rx'
+          ? '上位机接收时间（含串口抖动）'
+          : '待核实（未确认硬件同步）';
+
+    sixUserConfirmBody.innerHTML = `
+      <div><strong>数据类型：</strong>${ds.isSimulatedSample ? '模拟样例（仅格式演示，非实测）' : '本地导入六轴原始 CSV（来源待核实）'}</div>
+      <div><strong>映射列：</strong>时间=${cfg.timeCol} ｜ 陀螺=(${cfg.gxCol}, ${cfg.gyCol}, ${cfg.gzCol}) ｜ 比力=(${cfg.axCol}, ${cfg.ayCol}, ${cfg.azCol})</div>
+      <div><strong>显式单位：</strong>时间=${cfg.timeUnit} ｜ 角速度=${cfg.gyroUnit} ｜ 比力=${cfg.accelUnit}（已内部换算为 s, rad/s, m/s²）</div>
+      <div><strong>轴向符号：</strong>陀螺(${cfg.gyroSigns.x > 0 ? '+' : '-'},${cfg.gyroSigns.y > 0 ? '+' : '-'},${cfg.gyroSigns.z > 0 ? '+' : '-'}) ｜ 比力(${cfg.accelSigns.x > 0 ? '+' : '-'},${cfg.accelSigns.y > 0 ? '+' : '-'},${cfg.accelSigns.z > 0 ? '+' : '-'})</div>
+      <div><strong>时间基准：</strong>${timeBaseLabel} ｜ <strong>物理含义确认：</strong>${cfg.confirmedPhysicalMeaning ? '已确认（非rpm/非去重力线加速度）' : '未确认'}</div>
+    `;
+
+    const chk = ds.programChecks;
+    sixCheckBadge.textContent = '格式与显式条件通过';
+    sixProgramCheckBody.innerHTML = `
+      <div><strong>检查声明：</strong>${chk.summaryBadge}</div>
+      <div><strong>样本与时长：</strong>${chk.sampleCount} 帧 · 总时长 ${chk.durationSec.toFixed(3)}s</div>
+      <div><strong>真实时间间隔：</strong>dt_min=${chk.dtMin.toFixed(4)}s · dt_med=${chk.dtMed.toFixed(4)}s · dt_max=${chk.dtMax.toFixed(4)}s</div>
+      <div><strong>数值与单调性：</strong>有限性=${chk.allFinite ? '通过' : '失败'} · 严格递增=${chk.strictlyIncreasingTime ? '通过' : '失败'}</div>
+      <div><strong>辅助比力范数 |f_b|：</strong>均值 ${chk.accelNormMean.toFixed(3)} ± ${chk.accelNormStd.toFixed(3)} m/s²（范围 ${chk.accelNormMin.toFixed(3)}～${chk.accelNormMax.toFixed(3)}）</div>
+    `;
+
+    const chList: Array<{ label: string; stat: typeof chk.channels.gx }> = [
+      { label: 'gx (rad/s)', stat: chk.channels.gx },
+      { label: 'gy (rad/s)', stat: chk.channels.gy },
+      { label: 'gz (rad/s)', stat: chk.channels.gz },
+      { label: 'ax (m/s²)', stat: chk.channels.ax },
+      { label: 'ay (m/s²)', stat: chk.channels.ay },
+      { label: 'az (m/s²)', stat: chk.channels.az },
+    ];
+    sixStatsTbody.innerHTML = chList
+      .map(
+        (c) => `
+        <tr>
+          <td>${c.label}</td>
+          <td class="mono">${c.stat.min.toFixed(4)}</td>
+          <td class="mono">${c.stat.max.toFixed(4)}</td>
+          <td class="mono">${c.stat.mean.toFixed(4)}</td>
+          <td class="mono">${c.stat.std.toFixed(4)}</td>
+        </tr>
+      `
+      )
+      .join('');
+
+    sixAxisCharts.update(ds);
+  }
 
   function recomputePipeline(): void {
     const raw: SeriesData = {
@@ -684,6 +888,33 @@ function main(): void {
     const a = document.createElement('a');
     a.href = url;
     a.download = 'kf_huber_triaxis_diagnostics.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  tabBtnPosition.addEventListener('click', () => switchWorkspaceTab('position'));
+  tabBtnSixAxis.addEventListener('click', () => switchWorkspaceTab('six_axis'));
+
+  const openDoc = (tab: DocTabId) => docsModal.open(tab);
+  document.getElementById('btn-doc-algo')!.addEventListener('click', () => openDoc('algorithm'));
+  document.getElementById('btn-doc-changes')!.addEventListener('click', () => openDoc('changes'));
+  document.getElementById('btn-doc-capture')!.addEventListener('click', () => openDoc('capture'));
+
+  document.getElementById('btn-six-import')!.addEventListener('click', () => {
+    sixAxisImportModal.open();
+  });
+
+  document.getElementById('btn-six-load-sim')!.addEventListener('click', () => {
+    state.sixAxisDataset = createSimulatedSixAxisDataset();
+    renderSixAxisView();
+  });
+
+  document.getElementById('btn-six-download-tpl')!.addEventListener('click', () => {
+    const blob = new Blob([SIX_AXIS_TEMPLATE_CSV], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'six_axis_imu_template.csv';
     a.click();
     URL.revokeObjectURL(url);
   });
