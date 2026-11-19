@@ -28,6 +28,13 @@ import {
   formatAxisKfDiagnosticSummary,
 } from '../src/filters/diagnosticsExport.ts';
 import { fullImuAttitudeEkfPlaceholder } from '../src/filters/imuEkfInterface.ts';
+import {
+  buildSixAxisEskfComparisonCsv,
+  DEFAULT_SIX_AXIS_ESKF_PARAMS,
+  rightJacobianSO3,
+  runHuberSixAxisEskf,
+  runStandardSixAxisEskf,
+} from '../src/filters/sixAxisEskf.ts';
 import { buildActiveRotationMatrix, periodicAngleDiff } from '../src/math/angles.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -701,4 +708,47 @@ test('Six-axis validation: rejects NaN/Infinity, duplicate time, missing col, du
   const ovfRes = parseAndValidateSixAxisCsv(ovfCsv, 'ovf.csv', baseCfg);
   assert.equal(ovfRes.ok, false);
   if (!ovfRes.ok) assert.match(ovfRes.errors[0], /第 3 行.*非有限/);
+});
+
+test('Six-axis ESKF: A0 and A4 match when mu is large, and A4 downweights specific-force spike', () => {
+  const jrZero = rightJacobianSO3([0, 0, 0]);
+  assert.equal(jrZero[0][0], 1);
+  assert.equal(jrZero[1][1], 1);
+
+  const sim = createSimulatedSixAxisDataset();
+  const dsStationary = {
+    ...sim,
+    gx: sim.gx.map(() => 0),
+    gy: sim.gy.map(() => 0),
+    gz: sim.gz.map(() => 0),
+    ax: sim.ax.map(() => 0),
+    ay: sim.ay.map(() => 0),
+    az: sim.az.map(() => STANDARD_GRAVITY_M_S2),
+  };
+  // Clean stationary dataset with large mu -> A4 matches A0 to machine precision
+  const a0Clean = runStandardSixAxisEskf(dsStationary, DEFAULT_SIX_AXIS_ESKF_PARAMS);
+  const a4HighMu = runHuberSixAxisEskf(dsStationary, {
+    ...DEFAULT_SIX_AXIS_ESKF_PARAMS,
+    muX: 1e4,
+    muY: 1e4,
+  });
+  for (let i = 0; i < dsStationary.times.length; i++) {
+    assert.equal(a4HighMu.wyMean[i], 1);
+    assert.equal(a4HighMu.wxMean[i], 1);
+    assert.ok(Math.abs(a0Clean.rollDeg[i] - a4HighMu.rollDeg[i]) < 1e-8);
+    assert.ok(Math.abs(a0Clean.pitchDeg[i] - a4HighMu.pitchDeg[i]) < 1e-8);
+  }
+
+  // Inject +30 m/s^2 specific-force spike on stationary dataset at frame 100
+  const dsSpike = {
+    ...dsStationary,
+    ax: dsStationary.ax.map((v, i) => (i === 100 ? 30.0 : v)),
+  };
+  const a0Spk = runStandardSixAxisEskf(dsSpike);
+  const a4Spk = runHuberSixAxisEskf(dsSpike);
+  assert.ok(a4Spk.wyMean[100] < 0.75);
+  assert.ok(Math.abs(a4Spk.pitchDeg[100]) < Math.abs(a0Spk.pitchDeg[100]));
+
+  const csv = buildSixAxisEskfComparisonCsv(dsSpike, a0Spk, a4Spk);
+  assert.equal(csv.split('\n').filter((l) => !l.startsWith('#')).length, dsSpike.times.length + 1);
 });

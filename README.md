@@ -38,7 +38,7 @@
   - [docs/algorithm-six-axis.md](docs/algorithm-six-axis.md)：六轴无磁 ESKF + 双侧白化 Huber 主方案。
   - [docs/algorithm-changes.md](docs/algorithm-changes.md)：相对原 PDF 与九轴补充审阅稿的逐条变更清单。
   - [docs/six-axis-capture-guide.md](docs/six-axis-capture-guide.md)：今晚 WT61PC 六轴实测采集指南。
-- 六轴区域支持原始 CSV 预览、7 列映射（优先片上时间，兼容 WitMotion 中文表头与 `2000-00-00 HH:mm:ss.SSS` 无效日期格式；保留电脑时间追溯且不按电脑时间去重；区分正常跨日、设备重启与时间回退）、单位与轴向显式确认、物理含义勾选、可选配套 `.bin` 包边界/校验/截断检查（排除尾部不完整组而不补齐）、规范化七列 CSV 与质量报告导出、Schema 模板下载及原始通道波形展示；**完整六轴 ESKF 尚未接入前，不驱动三维姿态模型，也不冒充完成姿态解算**。
+- 六轴区域支持原始 CSV 预览、7 列映射（优先片上时间，兼容 WitMotion 中文表头与 `2000-00-00 HH:mm:ss.SSS` 无效日期格式；保留电脑时间追溯且不按电脑时间去重；区分正常跨日、设备重启与时间回退）、单位与轴向显式确认、物理含义勾选、可选配套 `.bin` 包边界/校验/截断检查（排除尾部不完整组而不补齐）、规范化七列 CSV 与质量报告导出、Schema 模板下载、原始通道波形展示，以及 **六轴无磁 ESKF（A0 标准一次 ESKF 对照 vs A4 双侧白化 Huber IRLS）** 的三轴姿态对比、双侧均值权重 $W_y / W_x$ 曲线与对比 CSV 导出（`src/filters/sixAxisEskf.ts`；注：当前噪声参数 $S_g, S_{bg}, R_a$ 仍为暂用待标定值，Yaw 为相对零方向且存在积分漂移，不驱动位置角演示链路的 3D 姿态模型）。
 
 ## 5. 测试、构建、预览与安全回退
 

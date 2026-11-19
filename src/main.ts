@@ -3,6 +3,7 @@ import { AttitudeCharts } from './components/AttitudeCharts';
 import { CsvImportModal } from './components/CsvImportModal';
 import { DocsModal, type DocTabId } from './components/DocsModal';
 import { SixAxisCharts } from './components/SixAxisCharts';
+import { SixAxisEskfCharts } from './components/SixAxisEskfCharts';
 import { SixAxisImportModal } from './components/SixAxisImportModal';
 import { Viewport3D } from './components/Viewport3D';
 import {
@@ -30,6 +31,13 @@ import {
   formatAxisKfDiagnosticSummary,
 } from './filters/diagnosticsExport';
 import { fullImuAttitudeEkfPlaceholder } from './filters/imuEkfInterface';
+import {
+  buildSixAxisEskfComparisonCsv,
+  DEFAULT_SIX_AXIS_ESKF_PARAMS,
+  runHuberSixAxisEskf,
+  runStandardSixAxisEskf,
+  type SixAxisEskfResult,
+} from './filters/sixAxisEskf';
 import { findNearestFrameIndex, periodicAngleDiff } from './math/angles';
 import type {
   AppliedDisturbance,
@@ -50,6 +58,9 @@ interface AppState {
   activeTab: WorkspaceTab;
   dataset: AttitudeDataset;
   sixAxisDataset: SixAxisDataset | null;
+  sixAxisA0: SixAxisEskfResult | null;
+  sixAxisA4: SixAxisEskfResult | null;
+  sixAxisMu: number;
   filterMode: FilterMode;
   kfMu: number;
   diagAxis: AxisKey;
@@ -247,10 +258,10 @@ function buildInitialAppHtml(): string {
         <section class="panel-card six-axis-banner">
           <div class="panel-header">
             <h2 class="panel-title">六轴原始 IMU 数据准备与检查（WT61PC 无磁配置）</h2>
-            <span class="convention-badge unconfirmed">完整六轴 ESKF 尚未接入 · 本轮不宣称完成</span>
+            <span class="convention-badge">已接入六轴无磁 ESKF（A0 标准对照 & A4 双侧 Huber）· 参数待实机标定</span>
           </div>
           <div class="ref-note">
-            当前链路与「位置角演示链路」完全隔离：仅用于检查机体系原始三轴角速度（rad/s）与三轴比力（m/s²）。WT61PC 无磁力计数据；Yaw 为相对零方向且可能漂移；真实原始日志待今晚采集；无独立姿态真值参考。<strong>严禁使用标量角度 KF、平滑算法或原始速度/比力直接驱动 3D 姿态模型。</strong>
+            当前链路与「位置角演示链路」完全隔离：仅接收机体系原始三轴角速度（rad/s）与三轴比力（m/s²）。WT61PC 无磁力计数据；Yaw 为相对零方向且存在积分漂移；无独立姿态真值参考；噪声参数 (S_g, S_bg, R_a) 为暂用待标定值。
           </div>
           <div class="six-axis-toolbar">
             <div class="topbar-actions">
@@ -316,6 +327,24 @@ function buildInitialAppHtml(): string {
             </table>
           </div>
         </section>
+
+        <section class="charts-panel">
+          <div class="panel-header">
+            <h2 class="panel-title">六轴无磁 ESKF 对比：A0 标准一次 ESKF（绿虚线） vs A4 双侧白化 Huber ESKF（紫实线）</h2>
+            <div class="filter-mode-bar">
+              <label for="input-six-mu" class="muted-text">μ_x = μ_y（暂用选值）：</label>
+              <input id="input-six-mu" type="number" step="0.1" min="0.5" value="${DEFAULT_SIX_AXIS_ESKF_PARAMS.muY}" style="width:62px;" />
+              <button id="btn-six-export-eskf" class="btn btn-sm" type="button" disabled>导出六轴ESKF对比CSV</button>
+            </div>
+          </div>
+          <div id="six-eskf-summary" class="ref-note mono">等待六轴数据导入后运行 A0 / A4 对比（无独立真值，Yaw 为相对零方向且存在漂移）。</div>
+          <div class="charts-stack">
+            <div class="chart-box"><canvas id="six-eskf-roll"></canvas></div>
+            <div class="chart-box"><canvas id="six-eskf-pitch"></canvas></div>
+            <div class="chart-box"><canvas id="six-eskf-yaw"></canvas></div>
+            <div class="chart-box"><canvas id="six-eskf-weight"></canvas></div>
+          </div>
+        </section>
       </div>
     </div>
   `;
@@ -330,6 +359,9 @@ function main(): void {
     activeTab: 'position',
     dataset: initialDataset,
     sixAxisDataset: null,
+    sixAxisA0: null,
+    sixAxisA4: null,
+    sixAxisMu: DEFAULT_SIX_AXIS_ESKF_PARAMS.muY,
     filterMode: 'kf',
     kfMu: DEFAULT_KF_PARAMS.mu,
     diagAxis: 'pitch',
@@ -425,6 +457,12 @@ function main(): void {
     gyro: document.getElementById('six-chart-gyro') as HTMLCanvasElement,
     accel: document.getElementById('six-chart-accel') as HTMLCanvasElement,
   });
+  const sixAxisEskfCharts = new SixAxisEskfCharts({
+    roll: document.getElementById('six-eskf-roll') as HTMLCanvasElement,
+    pitch: document.getElementById('six-eskf-pitch') as HTMLCanvasElement,
+    yaw: document.getElementById('six-eskf-yaw') as HTMLCanvasElement,
+    weight: document.getElementById('six-eskf-weight') as HTMLCanvasElement,
+  });
   const sixAxisImportModal = new SixAxisImportModal((sixDs) => {
     state.sixAxisDataset = sixDs;
     renderSixAxisView();
@@ -447,6 +485,9 @@ function main(): void {
   const sixStatsTbody = document.getElementById('six-stats-tbody')!;
   const btnSixExportCsv = document.getElementById('btn-six-export-csv') as HTMLButtonElement;
   const btnSixExportReport = document.getElementById('btn-six-export-report') as HTMLButtonElement;
+  const inputSixMu = document.getElementById('input-six-mu') as HTMLInputElement;
+  const btnSixExportEskf = document.getElementById('btn-six-export-eskf') as HTMLButtonElement;
+  const sixEskfSummaryEl = document.getElementById('six-eskf-summary')!;
 
   function switchWorkspaceTab(tab: WorkspaceTab): void {
     state.activeTab = tab;
@@ -462,6 +503,7 @@ function main(): void {
 
     if (!isPos) {
       sixAxisCharts.renderAll();
+      sixAxisEskfCharts.renderAll();
     } else {
       charts.renderAll();
     }
@@ -472,12 +514,15 @@ function main(): void {
     if (!ds) {
       btnSixExportCsv.disabled = true;
       btnSixExportReport.disabled = true;
+      btnSixExportEskf.disabled = true;
       sixAxisCharts.update(null);
+      sixAxisEskfCharts.update(null, null);
       return;
     }
 
     btnSixExportCsv.disabled = false;
     btnSixExportReport.disabled = false;
+    btnSixExportEskf.disabled = false;
 
     sixMetaFilename.textContent = ds.filename;
     sixMetaSource.textContent = ds.sourceStatusLabel;
@@ -538,6 +583,29 @@ function main(): void {
       .join('');
 
     sixAxisCharts.update(ds);
+
+    const eskfParams = {
+      ...DEFAULT_SIX_AXIS_ESKF_PARAMS,
+      muX: state.sixAxisMu,
+      muY: state.sixAxisMu,
+    };
+    const a0 = runStandardSixAxisEskf(ds, eskfParams);
+    const a4 = runHuberSixAxisEskf(ds, eskfParams);
+    state.sixAxisA0 = a0;
+    state.sixAxisA4 = a4;
+    sixAxisEskfCharts.update(a0, a4);
+
+    const minWy = Math.min(...a4.wyMean);
+    const minWx = Math.min(...a4.wxMean);
+    const fallbackCnt = a4.statuses.filter((s) => s !== 'SIX_AXIS_NOMINAL').length;
+    const maxDiffRP = Math.max(
+      ...a0.rollDeg.map((v, i) => Math.abs(v - a4.rollDeg[i])),
+      ...a0.pitchDeg.map((v, i) => Math.abs(v - a4.pitchDeg[i]))
+    );
+    sixEskfSummaryEl.textContent =
+      `A0 vs A4 暂用参数(sg=${eskfParams.sg}, sbg=${eskfParams.sbg}, ra=${eskfParams.ra}, μ=${state.sixAxisMu.toFixed(1)})：` +
+      `A4 最小观测权重 min(wy)=${minWy.toFixed(3)} · min(wx)=${minWx.toFixed(3)} · ` +
+      `A0/A4 倾斜最大差异=${maxDiffRP.toFixed(2)}° · 退化仅传播帧=${fallbackCnt}`;
   }
 
   function recomputePipeline(): void {
@@ -955,6 +1023,32 @@ function main(): void {
     const a = document.createElement('a');
     a.href = url;
     a.download = 'six_axis_quality_report.json';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  inputSixMu.addEventListener('change', () => {
+    const val = Number(inputSixMu.value);
+    if (Number.isFinite(val) && val >= 0.5) {
+      state.sixAxisMu = val;
+      if (state.sixAxisDataset) renderSixAxisView();
+    } else {
+      inputSixMu.value = String(state.sixAxisMu);
+    }
+  });
+
+  btnSixExportEskf.addEventListener('click', () => {
+    if (!state.sixAxisDataset || !state.sixAxisA0 || !state.sixAxisA4) return;
+    const csvText = buildSixAxisEskfComparisonCsv(
+      state.sixAxisDataset,
+      state.sixAxisA0,
+      state.sixAxisA4
+    );
+    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'six_axis_eskf_comparison.csv';
     a.click();
     URL.revokeObjectURL(url);
   });
