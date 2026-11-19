@@ -1,3 +1,5 @@
+import { shareRecording, observeRecording } from './data/sharedRecording';
+import { readSensorAttitude } from './data/sensorAttitude';
 import { mountPresentationPage } from './components/PresentationPage';
 import './style.css';
 import { AttitudeCharts } from './components/AttitudeCharts';
@@ -84,8 +86,8 @@ function buildInitialAppHtml(): string {
         <div class="topbar-left">
           <h1 class="app-title">三轴云台姿态可视化实验台</h1>
           <div class="workspace-tabs" role="tablist" aria-label="数据链路切换">
-            <button id="tab-btn-position" class="btn btn-sm btn-primary" type="button" role="tab" aria-selected="true">位置角演示链路</button>
-            <button id="tab-btn-six-axis" class="btn btn-sm" type="button" role="tab" aria-selected="false">六轴数据准备与检查</button>
+            <button id="tab-btn-position" class="btn btn-sm btn-primary" type="button" role="tab" aria-selected="true">位置角演示</button>
+            <button id="tab-btn-six-axis" class="btn btn-sm" type="button" role="tab" aria-selected="false">六轴分析（主页面）</button>
           </div>
           <div class="topbar-actions">
             <button id="btn-doc-algo" class="btn btn-sm" type="button">算法文档</button>
@@ -305,7 +307,7 @@ function buildInitialAppHtml(): string {
         <section class="charts-panel">
           <div class="panel-header">
             <h2 class="panel-title">六轴原始通道波形与统计（非姿态解算输出）</h2>
-            <span class="muted-text">仅展示机体系原始 ω_b 与 f_b；完整六轴 ESKF 接入前不驱动三维姿态</span>
+            <span class="muted-text">仅展示机体系原始 ω_b 与 f_b；同一记录可切换三维回放</span>
           </div>
           <div class="charts-stack">
             <div class="chart-box six-chart-box"><canvas id="six-chart-gyro"></canvas></div>
@@ -331,7 +333,7 @@ function buildInitialAppHtml(): string {
 
         <section class="charts-panel">
           <div class="panel-header">
-            <h2 class="panel-title">六轴无磁 ESKF 对比：A0 标准一次 ESKF（绿虚线） vs A4 双侧白化 Huber ESKF（紫实线）</h2>
+            <h2 class="panel-title">标准 ESKF 与鲁棒 ESKF 对比</h2>
             <div class="filter-mode-bar">
               <label for="input-six-mu" class="muted-text">μ_x = μ_y（暂用选值）：</label>
               <input id="input-six-mu" type="number" step="0.1" min="0.5" value="${DEFAULT_SIX_AXIS_ESKF_PARAMS.muY}" style="width:62px;" />
@@ -465,8 +467,7 @@ function main(): void {
     weight: document.getElementById('six-eskf-weight') as HTMLCanvasElement,
   });
   const sixAxisImportModal = new SixAxisImportModal((sixDs) => {
-    state.sixAxisDataset = sixDs;
-    renderSixAxisView();
+    shareRecording({dataset: sixDs, origin: 'six-axis'});
   });
   const docsModal = new DocsModal();
 
@@ -604,9 +605,7 @@ function main(): void {
       ...a0.pitchDeg.map((v, i) => Math.abs(v - a4.pitchDeg[i]))
     );
     sixEskfSummaryEl.textContent =
-      `A0 vs A4 暂用参数(sg=${eskfParams.sg}, sbg=${eskfParams.sbg}, ra=${eskfParams.ra}, μ=${state.sixAxisMu.toFixed(1)})：` +
-      `A4 最小观测权重 min(wy)=${minWy.toFixed(3)} · min(wx)=${minWx.toFixed(3)} · ` +
-      `A0/A4 倾斜最大差异=${maxDiffRP.toFixed(2)}° · 退化仅传播帧=${fallbackCnt}`;
+      `标准 / 鲁棒倾斜最大差异 ${maxDiffRP.toFixed(2)}° · 最小观测权重 ${minWy.toFixed(3)} · 最小状态权重 ${minWx.toFixed(3)} · 仅传播 ${fallbackCnt} 帧。差异不是精度提升；无独立真值。`;
   }
 
   function recomputePipeline(): void {
@@ -990,8 +989,7 @@ function main(): void {
   });
 
   document.getElementById('btn-six-load-sim')!.addEventListener('click', () => {
-    state.sixAxisDataset = createSimulatedSixAxisDataset();
-    renderSixAxisView();
+    shareRecording({dataset: createSimulatedSixAxisDataset(), origin: 'six-axis'});
   });
 
   document.getElementById('btn-six-download-tpl')!.addEventListener('click', () => {
@@ -1142,6 +1140,26 @@ function main(): void {
   renderLegend();
   loadDataset(initialDataset);
   mountPresentationPage(document.querySelector<HTMLElement>('.app-shell')!);
+  document.querySelector('.app-shell')!.classList.add('six-axis-primary');
+  const quickImport = document.createElement('button');
+  quickImport.className = 'btn btn-primary btn-sm'; quickImport.textContent = '导入记录（自动识别）';
+  quickImport.onclick = () => document.getElementById('show-import')!.click();
+  document.querySelector('.six-axis-toolbar .topbar-actions')!.prepend(quickImport);
+  document.getElementById('btn-six-import')!.textContent = '手动映射';
+  const sixView = document.getElementById('view-six-axis')!;
+  const compare = document.getElementById('six-eskf-summary')!.closest('section')!;
+  sixView.insertBefore(compare, sixView.children[1]);
+  observeRecording(record => {
+    state.sixAxisDataset = record.dataset;
+    renderSixAxisView();
+    const sensor = record.text ? readSensorAttitude(record.text, record.dataset) : null;
+    const angles = sensor ?? state.sixAxisA0!;
+    loadDataset({ ...createDemoDataset(), id: record.dataset.id + '-angles',
+      filename: record.dataset.filename, isDemo: record.dataset.isSimulatedSample,
+      sourceLabel: sensor ? '同一记录的传感器姿态（非真值）' : '同一记录的标准ESKF派生角度（非真值）',
+      times: record.dataset.times, roll: angles.rollDeg, pitch: angles.pitchDeg, yaw: angles.yawDeg,
+      rawSource: record.dataset.rawSource, importConfig: undefined });
+  });
 }
 
 main();

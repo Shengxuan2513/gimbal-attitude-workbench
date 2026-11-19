@@ -30,3 +30,11 @@
 
 .show-blue { color:#60a5fa; font-size:12px; }
 .presentation [hidden] { display:none !important; }
+
+.six-axis-primary #view-six-axis > .upper-grid, .six-axis-primary .six-axis-banner > .panel-header > span,
+.six-axis-primary .six-axis-banner > .ref-note, .six-axis-primary .topbar-left > .topbar-actions,
+.six-axis-primary #view-six-axis .readings-wrap, .six-axis-primary #view-six-axis .filter-mode-bar > label,
+.six-axis-primary #input-six-mu, .six-axis-primary #btn-six-download-tpl { display:none; }
+.six-axis-primary #view-six-axis .charts-panel { margin-top:10px; }
+.six-axis-primary #six-eskf-summary { font-family:inherit; color:#cbd5e1; }
+.six-axis-primary #view-six-axis > section:nth-child(2) .chart-box { height:155px; }

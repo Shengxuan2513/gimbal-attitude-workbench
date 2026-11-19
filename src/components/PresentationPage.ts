@@ -1,3 +1,4 @@
+import { shareRecording, observeRecording } from '../data/sharedRecording';
 import { readSensorAttitude, type SensorAttitude } from '../data/sensorAttitude';
 import './PresentationPage.css';
 import { Viewport3D } from './Viewport3D';
@@ -15,7 +16,7 @@ export function mountPresentationPage(advanced: HTMLElement): void {
   page.className = 'presentation';
   page.innerHTML = `
     <header class="show-header"><div><span class="show-eyebrow">ATTITUDE WORKBENCH</span><h1>云台姿态演示</h1></div>
-      <div class="show-actions"><button id="show-import" class="btn btn-primary">导入记录</button><button id="show-demo" class="btn">加载演示</button><button id="show-full" class="btn">全屏</button><button id="show-check" class="btn">数据检查</button></div></header>
+      <div class="show-actions"><button id="show-import" class="btn btn-primary">导入记录</button><button id="show-demo" class="btn">加载演示</button><button id="show-full" class="btn">全屏</button><button id="show-check" class="btn">六轴分析</button></div></header>
     <div class="show-status"><span id="show-file">加载模拟演示中…</span><span>无磁 · 相对偏航 · 无独立真值</span></div>
     <p id="show-error" role="alert" hidden></p>
     <section class="show-grid"><article class="show-model"><div class="show-panel-title"><h2>三维姿态</h2><select id="show-source" aria-label="模型数据源"><option value="robust">鲁棒滤波</option><option value="standard">标准滤波</option><option value="sensor" disabled hidden>传感器姿态</option></select><button id="show-camera" class="btn">重置视角</button></div>
@@ -82,7 +83,7 @@ export function mountPresentationPage(advanced: HTMLElement): void {
     el('time').textContent = `${dataset.times[index].toFixed(2)} / ${dataset.times.at(-1)!.toFixed(2)} s`;
     draw();
   }
-  function load(ds: SixAxisDataset, sourceText?: string): void {
+  function load(ds: SixAxisDataset, sourceText?: string, publish = true): void {
     const a = runStandardSixAxisEskf(ds), b = runHuberSixAxisEskf(ds);
     const nextSensor = sourceText ? readSensorAttitude(sourceText, ds) : null;
     stop(); sensor = nextSensor; el('sensor-legend').hidden = !sensor;
@@ -94,6 +95,7 @@ export function mountPresentationPage(advanced: HTMLElement): void {
     const c = ds.programChecks;
     el('file').textContent = `${ds.isSimulatedSample ? '模拟演示' : ds.filename} · ${ds.times.length} 帧 · ${c.effectiveHz.toFixed(1)} Hz · ${c.binVerified ? '已检查 BIN' : '仅 CSV，未验证通道同步'}${c.excludedCount ? ` · 排除 ${c.excludedCount} 条` : ''}${c.gapCount ? ` · ${c.gapCount} 处缺口` : ''}`;
     el('error').hidden = true; render();
+    if (publish) shareRecording({ dataset: ds, text: sourceText, origin: 'presentation' });
   }
   const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.accept = '.csv,.bin'; fileInput.multiple = true; fileInput.hidden = true; page.append(fileInput);
   el('import').onclick = () => { fileInput.value = ''; fileInput.click(); };
@@ -116,9 +118,9 @@ export function mountPresentationPage(advanced: HTMLElement): void {
     }
   };
   const manual = new SixAxisImportModal(ds => { ++importVersion; load(ds); });
-  const back = document.createElement('button'); back.className = 'btn presentation-back'; back.textContent = '返回演示'; back.hidden = true; advanced.before(back);
+  const back = document.createElement('button'); back.className = 'btn presentation-back'; back.textContent = '三维回放'; back.hidden = true; advanced.before(back);
   function showAdvanced(show: boolean): void { const oldPlay = advanced.querySelector<HTMLButtonElement>('#btn-play-pause'); if (!show && oldPlay?.textContent?.includes('暂停')) oldPlay.click(); stop(); page.hidden = show; advanced.hidden = !show; back.hidden = !show; if (!show) requestAnimationFrame(render); }
-  el('check').onclick = () => showAdvanced(true);
+  el('check').onclick = () => { showAdvanced(true); advanced.querySelector<HTMLButtonElement>('#tab-btn-six-axis')!.click(); };
   back.onclick = () => showAdvanced(false);
   const manualButton = document.createElement('button'); manualButton.className = 'btn presentation-manual'; manualButton.textContent = '手动导入到演示'; manualButton.onclick = () => manual.open(); back.after(manualButton); manualButton.hidden = true;
   back.addEventListener('click', () => { manualButton.hidden = true; });
@@ -138,5 +140,6 @@ export function mountPresentationPage(advanced: HTMLElement): void {
   new ResizeObserver(() => { if (!page.hidden) draw(); }).observe(el('viewport'));
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
   function tick(now: number): void { if (playing) { clock += (now - last) / 1000 * Number(el<HTMLSelectElement>('speed').value); while (index + 1 < dataset.times.length && dataset.times[index + 1] <= clock) index++; if (index === dataset.times.length - 1) stop(); render(); } last = now; requestAnimationFrame(tick); }
-  load(createSimulatedSixAxisDataset()); requestAnimationFrame(tick);
+  observeRecording(record => { if (record.origin !== 'presentation') { ++importVersion; load(record.dataset, record.text, false); } });
+  load(createSimulatedSixAxisDataset()); showAdvanced(true); manualButton.hidden = false; advanced.querySelector<HTMLButtonElement>('#tab-btn-six-axis')!.click(); requestAnimationFrame(tick);
 }

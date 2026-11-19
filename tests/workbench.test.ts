@@ -783,3 +783,14 @@ test('Presentation sensor overlay: optional, same rows/time, yaw relative to ini
   assert.equal(readSensorAttitude(presentationCsv.replace('角度X(°)', 'missing'), result.dataset), null);
   assert.equal(readSensorAttitude(presentationCsv.replace('00:00:01.010', '00:00:01.015'), result.dataset), null);
 });
+import { shareRecording, observeRecording } from '../src/data/sharedRecording.ts';
+test('Shared recording: one import updates all subscribers and new page receives current recording', () => {
+  const seen: string[] = [];
+  const off = observeRecording(r => seen.push(r.dataset.id));
+  const ds = createSimulatedSixAxisDataset();
+  shareRecording({dataset:ds, origin:'test'});
+  let current = '';
+  const off2 = observeRecording(r => { current = r.dataset.id; });
+  assert.equal(seen.at(-1), ds.id); assert.equal(current, ds.id);
+  off(); off2();
+});
