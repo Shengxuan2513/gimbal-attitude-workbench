@@ -752,3 +752,34 @@ test('Six-axis ESKF: A0 and A4 match when mu is large, and A4 downweights specif
   const csv = buildSixAxisEskfComparisonCsv(dsSpike, a0Spk, a4Spk);
   assert.equal(csv.split('\n').filter((l) => !l.startsWith('#')).length, dsSpike.times.length + 1);
 });
+import { importPresentationCsv } from '../src/data/presentationImport.ts';
+import { readSensorAttitude } from '../src/data/sensorAttitude.ts';
+
+const presentationHeader = '时间,片上时间(),加速度X(g),加速度Y(g),加速度Z(g),角速度X(°/s),角速度Y(°/s),角速度Z(°/s),角度X(°),角度Y(°),角度Z(°)';
+const presentationCsv = [presentationHeader,
+  '22:00:00.000,2000-00-00 00:00:01.000,0,0,1,0,0,0,1,2,179',
+  '22:00:00.010,2000-00-00 00:00:01.010,0,0,1,0,0,0,2,3,-179',
+  '22:00:00.020,2000-00-00 00:00:01.020,0,0,1,0,0,0,3,4,-178'].join('\n');
+
+test('Presentation import: fixed WitMotion profile loads directly without mapping and keeps validation', () => {
+  const result = importPresentationCsv(presentationCsv, 'data_0.csv');
+  assert.ok(result.ok);
+  assert.equal(result.dataset.times.length, 3);
+  assert.ok(Math.abs(result.dataset.programChecks.effectiveHz - 100) < 1e-7);
+  assert.equal(result.dataset.programChecks.binVerified, false);
+  assert.equal(result.dataset.ax[0], 0);
+  assert.equal(result.dataset.az[0], STANDARD_GRAVITY_M_S2);
+  assert.equal(importPresentationCsv(presentationCsv.replace('角速度X(°/s)', 'rpm'), 'bad.csv').ok, false);
+  assert.equal(importPresentationCsv(presentationCsv.replace('00:00:01.010', '00:00:01.000'), 'duplicate.csv').ok, false);
+  assert.equal(importPresentationCsv(presentationCsv.replace(',0,0,1,', ',NaN,0,1,'), 'nan.csv').ok, false);
+});
+
+test('Presentation sensor overlay: optional, same rows/time, yaw relative to initial value, never a truth reference', () => {
+  const result = importPresentationCsv(presentationCsv, 'data_0.csv');
+  assert.ok(result.ok);
+  const sensor = readSensorAttitude(presentationCsv, result.dataset);
+  assert.deepEqual(sensor?.rollDeg, [1, 2, 3]);
+  assert.deepEqual(sensor?.yawDeg, [0, 2, 3]);
+  assert.equal(readSensorAttitude(presentationCsv.replace('角度X(°)', 'missing'), result.dataset), null);
+  assert.equal(readSensorAttitude(presentationCsv.replace('00:00:01.010', '00:00:01.015'), result.dataset), null);
+});

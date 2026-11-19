@@ -1,3 +1,4 @@
+import { mountPresentationPage } from './components/PresentationPage';
 import './style.css';
 import { AttitudeCharts } from './components/AttitudeCharts';
 import { CsvImportModal } from './components/CsvImportModal';
@@ -1140,6 +1141,7 @@ function main(): void {
   // Initial render
   renderLegend();
   loadDataset(initialDataset);
+  mountPresentationPage(document.querySelector<HTMLElement>('.app-shell')!);
 }
 
 main();
