@@ -1,6 +1,11 @@
 import { SixAxisComparisonPanel } from './components/SixAxisComparisonPanel';
 import type { SharedRecording } from './data/sharedRecording';
-import { shareRecording, observeRecording } from './data/sharedRecording';
+import { shareRecording, observeRecording, setHostCommandOverlay } from './data/sharedRecording';
+import {
+  alignCommandToSensorTimes,
+  computeCommandTrackingMetrics,
+  parseHostCommandCsv,
+} from './data/commandMotionParser';
 import { readSensorAttitude } from './data/sensorAttitude';
 import { mountPresentationPage } from './components/PresentationPage';
 import './style.css';
@@ -342,6 +347,16 @@ function buildInitialAppHtml(): string {
               <button id="btn-six-export-eskf" class="btn btn-sm" type="button" disabled>导出六轴ESKF对比CSV</button>
             </div>
           </div>
+          <div class="comparison-toolbar" style="margin-bottom:6px;flex-wrap:wrap;gap:8px;">
+            <button id="btn-six-cmd-import" class="btn btn-sm" type="button">叠加指令CSV</button>
+            <button id="btn-six-cmd-clear" class="btn btn-ghost btn-sm" type="button" disabled>清除指令</button>
+            <label for="input-six-cmd-offset" class="muted-text">时间偏移(s)：</label>
+            <input id="input-six-cmd-offset" type="number" step="0.1" value="0.0" style="width:68px;" />
+            <label class="muted-text" style="display:inline-flex;align-items:center;gap:4px;">
+              <input id="chk-six-cmd-align" type="checkbox" checked /> 对齐起点姿态
+            </label>
+            <span id="six-cmd-status" class="muted-text mono">未叠加指令CSV（黄虚线=上位机指令估算）</span>
+          </div>
           <div id="six-eskf-summary" class="ref-note mono">等待六轴数据导入后运行 A0 / A4 对比（无独立真值，Yaw 为相对零方向且存在漂移）。</div>
           <div class="charts-stack">
             <div class="chart-box"><canvas id="six-eskf-roll"></canvas></div>
@@ -468,8 +483,12 @@ function main(): void {
     yaw: document.getElementById('six-eskf-yaw') as HTMLCanvasElement,
     weight: document.getElementById('six-eskf-weight') as HTMLCanvasElement,
   });
-  const sixAxisImportModal = new SixAxisImportModal((sixDs) => {
-    shareRecording({dataset: sixDs, origin: 'six-axis'});
+  const sixAxisImportModal = new SixAxisImportModal((sixDs, cmdTraj) => {
+    shareRecording({
+      dataset: sixDs,
+      origin: 'six-axis',
+      commandTrajectory: cmdTraj,
+    });
   });
   const docsModal = new DocsModal();
 
@@ -491,6 +510,16 @@ function main(): void {
   const btnSixExportReport = document.getElementById('btn-six-export-report') as HTMLButtonElement;
   const inputSixMu = document.getElementById('input-six-mu') as HTMLInputElement;
   const btnSixExportEskf = document.getElementById('btn-six-export-eskf') as HTMLButtonElement;
+  const btnSixCmdImport = document.getElementById('btn-six-cmd-import') as HTMLButtonElement;
+  const btnSixCmdClear = document.getElementById('btn-six-cmd-clear') as HTMLButtonElement;
+  const inputSixCmdOffset = document.getElementById('input-six-cmd-offset') as HTMLInputElement;
+  const chkSixCmdAlign = document.getElementById('chk-six-cmd-align') as HTMLInputElement;
+  const sixCmdStatusEl = document.getElementById('six-cmd-status')!;
+  const sixCmdFileInput = document.createElement('input');
+  sixCmdFileInput.type = 'file';
+  sixCmdFileInput.accept = '.csv,text/csv';
+  sixCmdFileInput.className = 'hidden';
+  document.body.appendChild(sixCmdFileInput);
   let activeRecording: SharedRecording | null = null;
   let comparisonPanel: SixAxisComparisonPanel | null = null;
   const sixEskfSummaryEl = document.getElementById('six-eskf-summary')!;
@@ -599,7 +628,32 @@ function main(): void {
     const a4 = runHuberSixAxisEskf(ds, eskfParams);
     state.sixAxisA0 = a0;
     state.sixAxisA4 = a4;
-    sixAxisEskfCharts.update(a0, a4);
+
+    const cmdTraj = activeRecording?.commandTrajectory ?? null;
+    const cmdOffset = activeRecording?.commandTimeOffsetSec ?? (Number(inputSixCmdOffset.value) || 0);
+    const cmdAlign = activeRecording?.commandAlignOrigin ?? chkSixCmdAlign.checked;
+    inputSixCmdOffset.value = String(cmdOffset);
+    chkSixCmdAlign.checked = cmdAlign;
+    btnSixCmdClear.disabled = !cmdTraj;
+
+    let alignedCmd = null;
+    if (cmdTraj) {
+      alignedCmd = alignCommandToSensorTimes(a4.times, a4, cmdTraj, cmdOffset, cmdAlign);
+      const mRoll = computeCommandTrackingMetrics(a4.rollDeg, alignedCmd.rollDeg);
+      const mPitch = computeCommandTrackingMetrics(a4.pitchDeg, alignedCmd.pitchDeg);
+      const mYaw = computeCommandTrackingMetrics(a4.yawDeg, alignedCmd.yawDeg);
+      if (alignedCmd.overlapCount > 0 && mRoll && mPitch && mYaw) {
+        sixCmdStatusEl.textContent =
+          `指令：${cmdTraj.filename} · 重叠 ${alignedCmd.overlapCount} 帧 · A4 跟随 RMSE(R/P/Y)=${mRoll.rmseDeg.toFixed(2)}°/${mPitch.rmseDeg.toFixed(2)}°/${mYaw.rmseDeg.toFixed(2)}°`;
+      } else {
+        sixCmdStatusEl.textContent =
+          `指令：${cmdTraj.filename} · 当前偏移(${cmdOffset.toFixed(1)}s)下无重叠时间段`;
+      }
+    } else {
+      sixCmdStatusEl.textContent = '未叠加指令CSV（黄虚线=上位机指令估算）';
+    }
+
+    sixAxisEskfCharts.update(a0, a4, alignedCmd);
     if (activeRecording) comparisonPanel?.update(activeRecording, a0, a4);
 
     const minWy = Math.min(...a4.wyMean);
@@ -1155,6 +1209,39 @@ function main(): void {
   const compare = document.getElementById('six-eskf-summary')!.closest('section')!;
   sixView.insertBefore(compare, sixView.children[1]);
   comparisonPanel = new SixAxisComparisonPanel(compare as HTMLElement);
+  btnSixCmdImport.addEventListener('click', () => sixCmdFileInput.click());
+  btnSixCmdClear.addEventListener('click', () => {
+    sixCmdFileInput.value = '';
+    setHostCommandOverlay(null, Number(inputSixCmdOffset.value) || 0, chkSixCmdAlign.checked);
+  });
+  sixCmdFileInput.addEventListener('change', async () => {
+    const file = sixCmdFileInput.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = parseHostCommandCsv(text, file.name);
+      setHostCommandOverlay(parsed, Number(inputSixCmdOffset.value) || 0, chkSixCmdAlign.checked);
+    } catch (err) {
+      sixCmdStatusEl.textContent = `指令 CSV 解析失败：${err instanceof Error ? err.message : String(err)}`;
+    }
+  });
+  inputSixCmdOffset.addEventListener('change', () => {
+    if (!activeRecording?.commandTrajectory) return;
+    setHostCommandOverlay(
+      activeRecording.commandTrajectory,
+      Number(inputSixCmdOffset.value) || 0,
+      chkSixCmdAlign.checked
+    );
+  });
+  chkSixCmdAlign.addEventListener('change', () => {
+    if (!activeRecording?.commandTrajectory) return;
+    setHostCommandOverlay(
+      activeRecording.commandTrajectory,
+      Number(inputSixCmdOffset.value) || 0,
+      chkSixCmdAlign.checked
+    );
+  });
+
   observeRecording(record => {
     activeRecording = record;
     state.sixAxisDataset = record.dataset;
