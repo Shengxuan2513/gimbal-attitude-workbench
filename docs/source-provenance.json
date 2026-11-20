@@ -42,5 +42,10 @@
     }
   ],
   "firmware_status": "No independently supplied MCU firmware source found; Python serial control is host-side, not embedded firmware.",
-  "excluded": "New real device logs, CSV/XLSX exports, caches, manufacturer binaries and credentials are not added."
+  "excluded": "New real device logs, CSV/XLSX exports, caches, manufacturer binaries and credentials are not added.",
+  "documentation_status_2026_11_20": {
+    "scope": "copied_without_changes is the original import snapshot; subsequent gimbal_console.py is tracked by Git history, not this list",
+    "firmware_update": "Vendor MCU communication example sources and HEX received locally; current complete BGC stabilization source remains unconfirmed; vendor materials not redistributed",
+    "current_code_baseline": "main a6ac819 / merged PR5"
+  }
 }

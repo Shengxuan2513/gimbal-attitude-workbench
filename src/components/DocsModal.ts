@@ -16,7 +16,7 @@ const DOC_CONTENT: Record<DocTabId, { title: string; path: string; body: string 
     body: algorithmChangesMd,
   },
   capture: {
-    title: '今晚采集指南',
+    title: '六轴采集指南',
     path: 'docs/six-axis-capture-guide.md',
     body: captureGuideMd,
   },
