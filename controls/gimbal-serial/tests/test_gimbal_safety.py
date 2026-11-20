@@ -26,6 +26,7 @@ from gimbal_safety import (  # noqa: E402
     validate_real_mode_config,
 )
 import periodic_motion  # noqa: E402
+import gimbal_console  # noqa: E402
 import read_com4  # noqa: E402
 import test_bgc  # noqa: E402
 import test_three_axes  # noqa: E402
@@ -337,6 +338,129 @@ class GimbalSafetyOfflineTests(unittest.TestCase):
         # Real mode still blocked without --confirm-real even with step args
         with self.assertRaises(SafetyConfigError):
             test_bgc.main(["--real", "--port", "COM10", "--axis", "yaw", "--speed", "-1.0", "--duration", "0.5"])
+
+    def test_console_on_site_param_edit_jog_symmetric_and_custom_run(self) -> None:
+        # 1. Invalid param edit rejected and preserves previous valid params
+        p0 = gimbal_console.ConsoleMotionParams()
+        bad_inputs = iter(["99.0", "", "", "", "", "", "", "", ""])
+        p_rejected = gimbal_console.edit_params_interactively(p0, lambda _q: next(bad_inputs))
+        self.assertEqual(p_rejected.jog_speed_rpm, p0.jog_speed_rpm)
+
+        # 2. Valid on-site param edit accepted
+        good_inputs = iter(["2.0", "0.3", "4.0", "2", "0.5", "10.0", "8.0", "8.0", "circle"])
+        p_ok = gimbal_console.edit_params_interactively(p0, lambda _q: next(good_inputs))
+        self.assertEqual(p_ok.jog_speed_rpm, 2.0)
+        self.assertEqual(p_ok.cycles, 2)
+        self.assertEqual(p_ok.amplitudes_deg["yaw"], 10.0)
+        self.assertEqual(p_ok.pattern, "circle")
+
+        # 3. Interactive console dry-run: jog y+, sym roll, run custom, quit
+        with tempfile.TemporaryDirectory() as td:
+            clk = FakeClock()
+            ser = FakeSerial(clock=clk, auto_ack=True)
+            cmds = iter([
+                "y+",
+                "sym roll",
+                "set",
+                "1.5", "0.4", "4.0", "1", "0.5", "8.0", "6.0", "6.0", "sync",
+                "run",
+                "q",
+            ])
+            rc = gimbal_console.run_console(
+                real_mode=False,
+                clock=clk,
+                input_fn=lambda _q: next(cmds),
+                fake_serial_factory=lambda: ser,
+                log_dir=Path(td),
+            )
+            self.assertEqual(rc, 0)
+            self.assertFalse(ser.is_open)
+            self.assertTrue((Path(td) / "console_run.csv").exists())
+            self.assertGreater(len(ser.nonzero_frames), 3)
+
+    def test_console_circle_and_fig8_patterns_and_overspeed_guard(self) -> None:
+        # fig8 with period=5.0s and pitch=15deg has 2x freq -> 6.28 rpm > 5.0 rpm, must reject
+        bad_fig8 = gimbal_console.ConsoleMotionParams(
+            pattern="fig8",
+            period_s=5.0,
+            cycles=2,
+            amplitudes_deg={"yaw": 20.0, "roll": 0.0, "pitch": 15.0},
+        )
+        with self.assertRaises(ValueError):
+            gimbal_console.validate_console_params(bad_fig8)
+
+        # Verify phase relationship of circle and 2x freq of fig8
+        p_circle = gimbal_console.ConsoleMotionParams(
+            pattern="circle",
+            period_s=4.0,
+            cycles=1,
+            amplitudes_deg={"yaw": 12.0, "roll": 0.0, "pitch": 12.0},
+        )
+        s0 = gimbal_console.compute_pattern_speeds_rpm(p_circle, elapsed=0.0, scale=1.0)
+        s1 = gimbal_console.compute_pattern_speeds_rpm(p_circle, elapsed=1.0, scale=1.0)
+        self.assertGreater(abs(s0["yaw"]), 0.1)
+        self.assertAlmostEqual(s0["pitch"], 0.0, places=6)
+        self.assertAlmostEqual(s1["yaw"], 0.0, places=6)
+        self.assertGreater(abs(s1["pitch"]), 0.1)
+
+        # Run circle and fig8 presets in dry-run console
+        with tempfile.TemporaryDirectory() as td:
+            clk = FakeClock()
+            ser = FakeSerial(clock=clk, auto_ack=True)
+            cmds = iter(["circle", "fig8", "q"])
+            rc = gimbal_console.run_console(
+                real_mode=False,
+                clock=clk,
+                input_fn=lambda _q: next(cmds),
+                fake_serial_factory=lambda: ser,
+                log_dir=Path(td),
+            )
+            self.assertEqual(rc, 0)
+            self.assertFalse(ser.is_open)
+            self.assertTrue((Path(td) / "console_circle.csv").exists())
+            self.assertTrue((Path(td) / "console_fig8.csv").exists())
+
+    def test_console_true_random_harmonics_bounds_and_return_to_zero(self) -> None:
+        p = gimbal_console.ConsoleMotionParams(
+            pattern="rand",
+            period_s=5.0,
+            cycles=5,
+            ramp_s=1.0,
+            amplitudes_deg={"yaw": 20.0, "roll": 15.0, "pitch": 15.0},
+        )
+        h1 = gimbal_console.generate_random_harmonics(p)
+        h2 = gimbal_console.generate_random_harmonics(p)
+        self.assertNotEqual(h1, h2)
+
+        p.random_harmonics = h1
+        total_time = p.period_s * p.cycles
+        dt = 0.05
+        steps = int(total_time / dt)
+        pos = {"yaw": 0.0, "roll": 0.0, "pitch": 0.0}
+        for i in range(steps + 1):
+            t = i * dt
+            sp = gimbal_console.compute_pattern_speeds_rpm(p, elapsed=t, scale=1.0)
+            for ax in ("yaw", "roll", "pitch"):
+                self.assertLessEqual(abs(sp[ax]), gimbal_console.HARD_MAX_SPEED_RPM + 1e-6)
+                pos[ax] += sp[ax] * 6.0 * dt
+                self.assertLessEqual(abs(pos[ax]), p.amplitudes_deg[ax] + 0.5)
+        for ax in ("yaw", "roll", "pitch"):
+            self.assertLess(abs(pos[ax]), 0.5)
+
+        with tempfile.TemporaryDirectory() as td:
+            clk = FakeClock()
+            ser = FakeSerial(clock=clk, auto_ack=True)
+            cmds = iter(["rand", "q"])
+            rc = gimbal_console.run_console(
+                real_mode=False,
+                clock=clk,
+                input_fn=lambda _q: next(cmds),
+                fake_serial_factory=lambda: ser,
+                log_dir=Path(td),
+            )
+            self.assertEqual(rc, 0)
+            self.assertFalse(ser.is_open)
+            self.assertTrue((Path(td) / "console_rand.csv").exists())
 
 
 if __name__ == "__main__":
