@@ -881,3 +881,14 @@ test('Host command CSV parser: parses BOM CSV, aligns with time offset and origi
   assert.equal(latest.commandTrajectory, null);
   off();
 });
+import { TimeViewport } from '../src/data/chartViewport.ts';
+test('Chart viewport: anchored zoom, boundary-clamped pan, reset and data identity without modifying samples', () => {
+ const v=new TimeViewport();const times=[0,.1,.5,1,2,5];const original=JSON.stringify(times);let changes=0;v.onChange(()=>changes++);v.setDomain(times,'a');
+ v.zoom(.5,.2);assert.ok(Math.abs(v.start-.5)<1e-10);assert.ok(Math.abs(v.end-3)<1e-10);assert.equal(v.at(.2),1);
+ v.pan(1e6);assert.equal(v.end,5);v.pan(-1e6);assert.equal(v.start,0);
+ for(let i=0;i<30;i++)v.zoom(.01);assert.ok(v.end-v.start>=.0005-1e-12);
+ v.zoom(1e20);assert.equal(v.start,0);assert.equal(v.end,5);
+ v.zoom(.5);const saved=v.start;v.setDomain(times,'a');assert.equal(v.start,saved);v.setDomain(times,'b');assert.equal(v.start,0);assert.equal(v.end,5);
+ v.zoom(NaN);v.pan(Infinity);assert.equal(v.start,0);assert.equal(JSON.stringify(times),original);assert.ok(changes>0);
+ v.reset();assert.equal(v.at(2),5);assert.equal(v.at(-2),0);
+});

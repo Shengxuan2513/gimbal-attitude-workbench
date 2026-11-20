@@ -1,3 +1,4 @@
+import { sixAxisViewport, bindChartNavigation, yRange, formatChartTime } from './chartNavigation';
 import { shareRecording, observeRecording } from '../data/sharedRecording';
 import { readSensorAttitude, type SensorAttitude } from '../data/sensorAttitude';
 import './PresentationPage.css';
@@ -44,7 +45,7 @@ export function mountPresentationPage(advanced: HTMLElement): void {
     const fields = ['rollDeg', 'pitchDeg', 'yawDeg'] as const;
     const titles = ['Roll 横滚角 (°)', 'Pitch 俯仰角 (°)', 'Yaw 相对偏航角 (°)'];
     const times = dataset.times;
-    const duration = Math.max(times.at(-1)!, 1e-6);
+
     canvases.forEach((canvas, axis) => {
       const rect = canvas.parentElement!.getBoundingClientRect();
       const w = Math.max(rect.width, 200), h = Math.max(rect.height, 100);
@@ -56,14 +57,15 @@ export function mountPresentationPage(advanced: HTMLElement): void {
       for (let i = 0; i < times.length; i++) { lo = Math.min(lo, a[i], b[i], c?.[i] ?? Infinity); hi = Math.max(hi, a[i], b[i], c?.[i] ?? -Infinity); }
       const padding = Math.max(1, (hi - lo) * .12); lo -= padding; hi += padding;
       const left = 54, top = 26, pw = w - left - 14, ph = h - top - 26;
-      const x = (t: number) => left + t / duration * pw;
+      const x = (t: number) => left + (t - sixAxisViewport.start) / Math.max(1e-9, sixAxisViewport.end - sixAxisViewport.start) * pw;
+      [lo, hi] = yRange(canvas, lo, hi);
       const y = (v: number) => top + (hi - v) / (hi - lo) * ph;
       ctx.font = '12px Microsoft YaHei, sans-serif'; ctx.fillStyle = '#dbe5f5'; ctx.fillText(titles[axis], left, 17);
       for (let j = 0; j <= 2; j++) {
         const v = lo + (hi - lo) * j / 2;
         ctx.strokeStyle = '#243044'; ctx.beginPath(); ctx.moveTo(left, y(v)); ctx.lineTo(w - 14, y(v)); ctx.stroke();
         ctx.fillStyle = '#94a3b8'; ctx.fillText(v.toFixed(1), 4, y(v) + 4);
-        ctx.fillText((duration * j / 2).toFixed(1) + 's', x(duration * j / 2) - 12, h - 5);
+        ctx.fillText(formatChartTime(sixAxisViewport.at(j / 2)) + 's', x(sixAxisViewport.at(j / 2)) - 12, h - 5);
       }
       ctx.save(); ctx.beginPath(); ctx.rect(left, top, pw, ph); ctx.clip();
       (c ? [a, b, c] : [a, b]).forEach((values, n) => {
@@ -136,7 +138,8 @@ export function mountPresentationPage(advanced: HTMLElement): void {
     const blob = new Blob([buildSixAxisEskfComparisonCsv(dataset, standard, robust)], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'six_axis_eskf_comparison.csv'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  canvases.forEach(canvas => canvas.onclick = e => { const rect = canvas.getBoundingClientRect(); const t = Math.max(0, Math.min(1, (e.clientX - rect.left - 54) / (rect.width - 68))) * dataset.times.at(-1)!; stop(); index = dataset.times.reduce((best, v, i) => Math.abs(v - t) < Math.abs(dataset.times[best] - t) ? i : best, 0); clock = dataset.times[index]; render(); });
+  canvases.forEach(canvas => bindChartNavigation(canvas, draw, 54, 14));
+  canvases.forEach(canvas => canvas.onclick = e => { const rect = canvas.getBoundingClientRect(); const t = sixAxisViewport.at((e.clientX - rect.left - 54) / (rect.width - 68)); stop(); index = dataset.times.reduce((best, v, i) => Math.abs(v - t) < Math.abs(dataset.times[best] - t) ? i : best, 0); clock = dataset.times[index]; render(); });
   new ResizeObserver(() => { if (!page.hidden) draw(); }).observe(el('viewport'));
   document.addEventListener('visibilitychange', () => { if (document.hidden) stop(); });
   function tick(now: number): void { if (playing) { clock += (now - last) / 1000 * Number(el<HTMLSelectElement>('speed').value); while (index + 1 < dataset.times.length && dataset.times[index + 1] <= clock) index++; if (index === dataset.times.length - 1) stop(); render(); } last = now; requestAnimationFrame(tick); }
