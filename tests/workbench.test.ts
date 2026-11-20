@@ -794,3 +794,32 @@ test('Shared recording: one import updates all subscribers and new page receives
   assert.equal(seen.at(-1), ds.id); assert.equal(current, ds.id);
   off(); off2();
 });
+import { injectSoftwarePulse } from '../src/data/softwareInterference.ts';
+import { setSoftwareInterference } from '../src/data/sharedRecording.ts';
+import { angularDeviation, comparisonRows } from '../src/data/comparisonView.ts';
+test('Software pulse: copy only, exact sampled window, deterministic and no accumulated injection', () => {
+  const base=createSimulatedSixAxisDataset(); const before=JSON.stringify(base);
+  const one=injectSoftwarePulse(base),two=injectSoftwarePulse(base);
+  assert.equal(JSON.stringify(base),before); assert.deepEqual(one.dataset.ax,two.dataset.ax);
+  assert.equal(one.dataset.times,base.times); assert.equal(one.dataset.gx,base.gx);
+  let hits=0; one.dataset.ax.forEach((v,i)=>{const expected=i>0&&base.times[i]>=one.interference.start&&base.times[i]<=one.interference.end; assert.ok(Math.abs(v-base.ax[i]-(expected?3:0))<1e-12);if(expected)hits++;});
+  assert.equal(hits,one.interference.count);assert.ok(hits>0);
+});
+test('Software branch shared across views: restore original and reset branch on new import', () => {
+  const base=createSimulatedSixAxisDataset();shareRecording({dataset:base,origin:'test-import'});
+  let latest: any; const off=observeRecording(r=>latest=r);
+  setSoftwareInterference(true);const first=latest;assert.equal(latest.baseline,base);assert.equal(latest.text,undefined);
+  setSoftwareInterference(true);assert.deepEqual(latest.dataset.ax,first.dataset.ax);
+  setSoftwareInterference(false);assert.equal(latest.dataset,base);assert.equal(latest.interference,undefined);
+  shareRecording({dataset:{...base,id:'new-record'},origin:'test-import'});setSoftwareInterference(true);assert.equal(latest.baseline.id,'new-record');off();
+});
+test('Deviation is same-algorithm baseline, handles wrap, weight arrays are actual filter outputs', () => {
+  assert.deepEqual(angularDeviation([-179,179],[179,-179]),[2,-2]);
+  const base=createSimulatedSixAxisDataset(), branch=injectSoftwarePulse(base).dataset;
+  const b0=runStandardSixAxisEskf(base), b4=runHuberSixAxisEskf(base);
+  const a0=runStandardSixAxisEskf(branch), a4=runHuberSixAxisEskf(branch);
+  const rows=comparisonRows(a0,a4,b0,b4);assert.equal(rows.length,3);
+  assert.deepEqual(rows[0].standardDeviation,angularDeviation(a0.rollDeg,b0.rollDeg));
+  assert.ok(comparisonRows(b0,b4,b0,b4).every(r=>r.standardDeviation.every(v=>Math.abs(v)<1e-10)&&r.robustDeviation.every(v=>Math.abs(v)<1e-10)));
+  assert.ok(a4.wyMean.every(v=>Number.isFinite(v)&&v>=0&&v<=1));assert.ok(a4.wxMean.every(v=>Number.isFinite(v)&&v>=0&&v<=1));
+});

@@ -1,3 +1,5 @@
+import { SixAxisComparisonPanel } from './components/SixAxisComparisonPanel';
+import type { SharedRecording } from './data/sharedRecording';
 import { shareRecording, observeRecording } from './data/sharedRecording';
 import { readSensorAttitude } from './data/sensorAttitude';
 import { mountPresentationPage } from './components/PresentationPage';
@@ -489,6 +491,8 @@ function main(): void {
   const btnSixExportReport = document.getElementById('btn-six-export-report') as HTMLButtonElement;
   const inputSixMu = document.getElementById('input-six-mu') as HTMLInputElement;
   const btnSixExportEskf = document.getElementById('btn-six-export-eskf') as HTMLButtonElement;
+  let activeRecording: SharedRecording | null = null;
+  let comparisonPanel: SixAxisComparisonPanel | null = null;
   const sixEskfSummaryEl = document.getElementById('six-eskf-summary')!;
 
   function switchWorkspaceTab(tab: WorkspaceTab): void {
@@ -596,6 +600,7 @@ function main(): void {
     state.sixAxisA0 = a0;
     state.sixAxisA4 = a4;
     sixAxisEskfCharts.update(a0, a4);
+    if (activeRecording) comparisonPanel?.update(activeRecording, a0, a4);
 
     const minWy = Math.min(...a4.wyMean);
     const minWx = Math.min(...a4.wxMean);
@@ -1149,7 +1154,9 @@ function main(): void {
   const sixView = document.getElementById('view-six-axis')!;
   const compare = document.getElementById('six-eskf-summary')!.closest('section')!;
   sixView.insertBefore(compare, sixView.children[1]);
+  comparisonPanel = new SixAxisComparisonPanel(compare as HTMLElement);
   observeRecording(record => {
+    activeRecording = record;
     state.sixAxisDataset = record.dataset;
     renderSixAxisView();
     const sensor = record.text ? readSensorAttitude(record.text, record.dataset) : null;

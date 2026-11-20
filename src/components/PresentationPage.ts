@@ -93,7 +93,7 @@ export function mountPresentationPage(advanced: HTMLElement): void {
     dataset = ds; standard = a; robust = b; index = 0; clock = 0;
     slider.max = String(ds.times.length - 1);
     const c = ds.programChecks;
-    el('file').textContent = `${ds.isSimulatedSample ? '模拟演示' : ds.filename} · ${ds.times.length} 帧 · ${c.effectiveHz.toFixed(1)} Hz · ${c.binVerified ? '已检查 BIN' : '仅 CSV，未验证通道同步'}${c.excludedCount ? ` · 排除 ${c.excludedCount} 条` : ''}${c.gapCount ? ` · ${c.gapCount} 处缺口` : ''}`;
+    el('file').textContent = `${ds.isSimulatedSample ? '模拟演示' : ds.filename}${ds.id.endsWith('-software-pulse') ? ' · 软件注入（非真实外部干扰）' : ''} · ${ds.times.length} 帧 · ${c.effectiveHz.toFixed(1)} Hz · ${c.binVerified ? '已检查 BIN' : '仅 CSV，未验证通道同步'}${c.excludedCount ? ` · 排除 ${c.excludedCount} 条` : ''}${c.gapCount ? ` · ${c.gapCount} 处缺口` : ''}`;
     el('error').hidden = true; render();
     if (publish) shareRecording({ dataset: ds, text: sourceText, origin: 'presentation' });
   }
