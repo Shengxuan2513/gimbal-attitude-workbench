@@ -1,3 +1,4 @@
+import { sixAxisViewport, resetChartView } from './components/chartNavigation';
 import { SixAxisComparisonPanel } from './components/SixAxisComparisonPanel';
 import type { SharedRecording } from './data/sharedRecording';
 import { shareRecording, observeRecording, setHostCommandOverlay } from './data/sharedRecording';
@@ -1209,6 +1210,7 @@ function main(): void {
   const compare = document.getElementById('six-eskf-summary')!.closest('section')!;
   sixView.insertBefore(compare, sixView.children[1]);
   comparisonPanel = new SixAxisComparisonPanel(compare as HTMLElement);
+  resetChartView();
   btnSixCmdImport.addEventListener('click', () => sixCmdFileInput.click());
   btnSixCmdClear.addEventListener('click', () => {
     sixCmdFileInput.value = '';
@@ -1242,7 +1244,11 @@ function main(): void {
     );
   });
 
+  let navigationDataKey = "";
   observeRecording(record => {
+    const navigationKey = record.dataset.id.replace(/-software-pulse$/, "");
+    sixAxisViewport.setDomain(record.dataset.times, navigationKey);
+    if (navigationKey !== navigationDataKey) { navigationDataKey = navigationKey; resetChartView(); }
     activeRecording = record;
     state.sixAxisDataset = record.dataset;
     renderSixAxisView();

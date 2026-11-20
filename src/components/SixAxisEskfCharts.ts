@@ -1,3 +1,4 @@
+import { sixAxisViewport, bindChartNavigation, yRange, formatChartTime } from './chartNavigation';
 import type { AlignedCommandSeries } from '../data/commandMotionParser';
 import type { SixAxisEskfResult } from '../filters/sixAxisEskf';
 
@@ -26,8 +27,10 @@ export class SixAxisEskfCharts {
   }) {
     this.canvases = canvases;
     this.resizeObserver = new ResizeObserver(() => this.renderAll());
+    const redraw = () => this.renderAll();
     for (const c of Object.values(canvases)) {
       this.resizeObserver.observe(c.parentElement ?? c);
+      bindChartNavigation(c, redraw, 56, 18);
     }
   }
 
@@ -85,8 +88,8 @@ export class SixAxisEskfCharts {
     const arr0 = this.a0[field];
     const arr4 = this.a4[field];
     const cmdArr = this.alignedCommand ? this.alignedCommand[field] : null;
-    const tMin = times[0];
-    const tMax = times[times.length - 1];
+    const tMin = sixAxisViewport.start;
+    const tMax = sixAxisViewport.end;
     const tSpan = Math.max(1e-6, tMax - tMin);
 
     let yMin = Infinity;
@@ -113,6 +116,7 @@ export class SixAxisEskfCharts {
     }
 
     const toX = (t: number) => PAD_LEFT + ((t - tMin) / tSpan) * plotW;
+    [yMin, yMax] = yRange(canvas, yMin, yMax);
     const toY = (v: number) => PAD_TOP + (1 - (v - yMin) / (yMax - yMin)) * plotH;
 
     ctx.strokeStyle = '#1e293b';
@@ -227,18 +231,19 @@ export class SixAxisEskfCharts {
     const times = this.a4.times;
     const wy = this.a4.wyMean;
     const wx = this.a4.wxMean;
-    const tMin = times[0];
-    const tMax = times[times.length - 1];
+    const tMin = sixAxisViewport.start;
+    const tMax = sixAxisViewport.end;
     const tSpan = Math.max(1e-6, tMax - tMin);
 
     const toX = (t: number) => PAD_LEFT + ((t - tMin) / tSpan) * plotW;
-    const toY = (v: number) => PAD_TOP + (1 - Math.max(0, Math.min(1.05, v)) / 1.05) * plotH;
+    const [low, high] = yRange(canvas, 0, 1.05);
+    const toY = (v: number) => PAD_TOP + (1 - (v - low) / (high - low)) * plotH;
 
     ctx.strokeStyle = '#1e293b';
     ctx.font = '11px Consolas, monospace';
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    for (const val of [0, 0.5, 1.0]) {
+    for (const val of [low, (low + high) / 2, high]) {
       const y = toY(val);
       ctx.beginPath();
       ctx.moveTo(PAD_LEFT, y);
@@ -254,7 +259,7 @@ export class SixAxisEskfCharts {
       const t = tMin + (i / 6) * tSpan;
       const x = toX(t);
       ctx.fillStyle = '#94a3b8';
-      ctx.fillText(`${t.toFixed(1)}s`, x, PAD_TOP + plotH + 5);
+      ctx.fillText(`${formatChartTime(t)}s`, x, PAD_TOP + plotH + 5);
     }
 
     ctx.save();

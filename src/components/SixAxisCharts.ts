@@ -1,3 +1,4 @@
+import { sixAxisViewport, bindChartNavigation, yRange, formatChartTime } from './chartNavigation';
 import type { SixAxisDataset } from '../types/sixAxis';
 
 const PAD_LEFT = 62;
@@ -42,8 +43,10 @@ export class SixAxisCharts {
     ];
 
     this.resizeObserver = new ResizeObserver(() => this.renderAll());
+    const redraw = () => this.renderAll();
     for (const s of this.specs) {
       this.resizeObserver.observe(s.canvas.parentElement ?? s.canvas);
+      bindChartNavigation(s.canvas, redraw, 62, 18);
     }
   }
 
@@ -91,8 +94,8 @@ export class SixAxisCharts {
     }
 
     const times = this.dataset.times;
-    const tMin = times[0];
-    const tMax = times[times.length - 1];
+    const tMin = sixAxisViewport.start;
+    const tMax = sixAxisViewport.end;
     const tSpan = Math.max(1e-6, tMax - tMin);
 
     let yMin = Infinity;
@@ -118,6 +121,7 @@ export class SixAxisCharts {
     }
 
     const toX = (t: number) => PAD_LEFT + ((t - tMin) / tSpan) * plotW;
+    [yMin, yMax] = yRange(canvas, yMin, yMax);
     const toY = (v: number) => PAD_TOP + (1 - (v - yMin) / (yMax - yMin)) * plotH;
 
     // Grid
@@ -150,7 +154,7 @@ export class SixAxisCharts {
       ctx.lineTo(x, PAD_TOP + plotH);
       ctx.stroke();
       ctx.fillStyle = '#94a3b8';
-      ctx.fillText(`${t.toFixed(1)}s`, x, PAD_TOP + plotH + 5);
+      ctx.fillText(`${formatChartTime(t)}s`, x, PAD_TOP + plotH + 5);
     }
 
     // Curves

@@ -1,3 +1,4 @@
+import { sixAxisViewport, bindChartNavigation, yRange, resetChartView, formatChartTime } from './chartNavigation';
 import './SixAxisComparisonPanel.css';
 import { runStandardSixAxisEskf, runHuberSixAxisEskf, type SixAxisEskfResult } from '../filters/sixAxisEskf';
 import { comparisonRows } from '../data/comparisonView';
@@ -29,9 +30,14 @@ export class SixAxisComparisonPanel {
     this.element.querySelector('details')!.addEventListener('toggle',()=>this.draw());
     this.element.querySelector('input')!.addEventListener('input',e=>{this.cursor=Number((e.target as HTMLInputElement).value);this.draw();});
     this.element.querySelector('#six-export-view')!.addEventListener('click',()=>this.export());
+    const redraw=()=>this.draw();
+    this.element.querySelectorAll('canvas').forEach(canvas=>bindChartNavigation(canvas,redraw,48,12));
+    const reset=document.createElement('button');reset.className='btn btn-sm';reset.textContent='恢复全图';reset.id='six-chart-reset';reset.onclick=resetChartView;this.element.querySelector('.comparison-toolbar')!.append(reset);
+    const hint=document.createElement('span');hint.className='muted-text';hint.textContent='滚轮缩放 · 拖动平移 · Shift 调整纵轴';this.element.querySelector('.comparison-toolbar')!.append(hint);
+    const range=document.createElement('span');range.id='six-visible-range';range.className='muted-text';this.element.querySelector('.comparison-toolbar')!.append(range);
     this.element.querySelectorAll('canvas').forEach(canvas=>canvas.addEventListener('click',e=>{
       if(!this.record)return; const rect=canvas.getBoundingClientRect(),times=this.record.dataset.times;
-      const t=times[0]+Math.max(0,Math.min(1,(e.clientX-rect.left-48)/(rect.width-60)))*(times.at(-1)!-times[0]);
+      const t=sixAxisViewport.at((e.clientX-rect.left-48)/(rect.width-60));
       this.cursor=times.reduce((b,v,i)=>Math.abs(v-t)<Math.abs(times[b]-t)?i:b,0);this.draw();
     }));
     new ResizeObserver(()=>this.draw()).observe(this.element);
@@ -52,16 +58,18 @@ export class SixAxisComparisonPanel {
     canvas.width=w*dpr;canvas.height=h*dpr;const ctx=canvas.getContext('2d')!;ctx.scale(dpr,dpr);
     let low=weight?0:Infinity,high=weight?1:-Infinity;
     if(!weight){for(const line of lines)for(const v of line.values){low=Math.min(low,v);high=Math.max(high,v);}const pad=Math.max(.02,(high-low)*.1);low-=pad;high+=pad;}
-    const x=(t:number)=>48+(t-times[0])/Math.max(1e-9,times.at(-1)!-times[0])*(w-60),y=(v:number)=>31+(high-v)/(high-low)*99;
+    [low,high]=yRange(canvas,low,high);
+    const x=(t:number)=>48+(t-sixAxisViewport.start)/Math.max(1e-9,sixAxisViewport.end-sixAxisViewport.start)*(w-60),y=(v:number)=>31+(high-v)/(high-low)*99;
     ctx.font='11px Microsoft YaHei,sans-serif';ctx.fillStyle='#94a3b8';ctx.fillText(title,48,14);
-    if(this.record.interference){ctx.fillStyle='rgba(251,191,36,.14)';const p=this.record.interference;ctx.fillRect(x(p.start),25,Math.max(2,x(p.end)-x(p.start)),105);}
-    for(let i=0;i<3;i++){const v=low+(high-low)*i/2;ctx.fillStyle='#94a3b8';ctx.fillText(v.toFixed(2),1,y(v)+3);ctx.strokeStyle='#27364b';ctx.beginPath();ctx.moveTo(48,y(v));ctx.lineTo(w-12,y(v));ctx.stroke();ctx.fillText((times[0]+(times.at(-1)!-times[0])*i/2).toFixed(1)+'s',48+(w-90)*i/2,151);}
+    if(this.record.interference){ctx.fillStyle='rgba(251,191,36,.14)';const p=this.record.interference;const x0=Math.max(48,x(p.start)),x1=Math.min(w-12,x(p.end));if(x1>x0)ctx.fillRect(x0,25,x1-x0,105);}
+    for(let i=0;i<3;i++){const v=low+(high-low)*i/2;ctx.fillStyle='#94a3b8';ctx.fillText(v.toFixed(2),1,y(v)+3);ctx.strokeStyle='#27364b';ctx.beginPath();ctx.moveTo(48,y(v));ctx.lineTo(w-12,y(v));ctx.stroke();ctx.fillText(formatChartTime(sixAxisViewport.at(i/2))+'s',48+(w-90)*i/2,151);}
     ctx.save();ctx.beginPath();ctx.rect(48,25,w-60,106);ctx.clip();
     lines.forEach((line,n)=>{ctx.strokeStyle=line.color;ctx.lineWidth=1.8;ctx.setLineDash(n===0?[4,3]:[]);ctx.beginPath();line.values.forEach((v,i)=>{if(!i||Math.abs(v-line.values[i-1])>180)ctx.moveTo(x(times[i]),y(v));else ctx.lineTo(x(times[i]),y(v));});ctx.stroke();});
     ctx.setLineDash([]);ctx.strokeStyle='#f1f5f9';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x(times[this.cursor]),25);ctx.lineTo(x(times[this.cursor]),131);ctx.stroke();ctx.restore();
   }
   private draw(): void {
     if(!this.record||!this.a0||!this.a4||!this.b0||!this.b4)return;
+    this.element.querySelector('#six-visible-range')!.textContent=`时间窗 ${formatChartTime(sixAxisViewport.start)}–${formatChartTime(sixAxisViewport.end)} s`;
     const original=this.record.baseline??this.record.dataset;
     this.plot(this.element.querySelector('.comparison-input canvas')!,[{label:'原始',values:original.ax,color:'#94a3b8'},{label:'当前',values:this.record.dataset.ax,color:'#fbbf24'}],'加速度 X (m/s²)：灰=原始，黄=当前输入');
     const rows=comparisonRows(this.a0,this.a4,this.b0,this.b4),canvases=this.element.querySelectorAll<HTMLCanvasElement>('.nine-grid canvas');
