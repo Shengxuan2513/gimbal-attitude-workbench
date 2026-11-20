@@ -2,6 +2,8 @@
 
 更新：2026-11-20；代码基线：main a6ac819（PR #5）。本指南描述当前实现，不代表独立精度认证或硬件全部验收。
 
+逐步执行请看 [从GitHub到实机实验操作手册](github-to-hardware-guide.md)，本页为总览。
+
 ## 源码入口
 - src/filters/sixAxisEskf.ts：当前六轴 A0/A4 主算法；src/filters/angleKf.ts：旧位置角演示算法。
 - src/components/、src/data/：页面、六轴导入、软件干扰、共享记录、指令日志对齐；tests/：前端回归测试。
