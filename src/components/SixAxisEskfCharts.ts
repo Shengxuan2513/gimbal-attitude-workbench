@@ -1,3 +1,4 @@
+import type { AlignedCommandSeries } from '../data/commandMotionParser';
 import type { SixAxisEskfResult } from '../filters/sixAxisEskf';
 
 const PAD_LEFT = 56;
@@ -14,6 +15,7 @@ export class SixAxisEskfCharts {
   };
   private a0: SixAxisEskfResult | null = null;
   private a4: SixAxisEskfResult | null = null;
+  private alignedCommand: AlignedCommandSeries | null = null;
   private resizeObserver: ResizeObserver;
 
   constructor(canvases: {
@@ -29,9 +31,14 @@ export class SixAxisEskfCharts {
     }
   }
 
-  public update(a0: SixAxisEskfResult | null, a4: SixAxisEskfResult | null): void {
+  public update(
+    a0: SixAxisEskfResult | null,
+    a4: SixAxisEskfResult | null,
+    alignedCommand: AlignedCommandSeries | null = null
+  ): void {
     this.a0 = a0;
     this.a4 = a4;
+    this.alignedCommand = alignedCommand;
     this.renderAll();
   }
 
@@ -77,6 +84,7 @@ export class SixAxisEskfCharts {
     const times = this.a0.times;
     const arr0 = this.a0[field];
     const arr4 = this.a4[field];
+    const cmdArr = this.alignedCommand ? this.alignedCommand[field] : null;
     const tMin = times[0];
     const tMax = times[times.length - 1];
     const tSpan = Math.max(1e-6, tMax - tMin);
@@ -88,6 +96,11 @@ export class SixAxisEskfCharts {
       if (arr0[i] > yMax) yMax = arr0[i];
       if (arr4[i] < yMin) yMin = arr4[i];
       if (arr4[i] > yMax) yMax = arr4[i];
+      const cv = cmdArr ? cmdArr[i] : null;
+      if (cv !== null) {
+        if (cv < yMin) yMin = cv;
+        if (cv > yMax) yMax = cv;
+      }
     }
     if (Math.abs(yMax - yMin) < 2) {
       const m = 0.5 * (yMin + yMax);
@@ -148,6 +161,31 @@ export class SixAxisEskfCharts {
       else ctx.lineTo(x, y);
     }
     ctx.stroke();
+
+    // Optional Host Command Trajectory (amber dotted)
+    if (cmdArr) {
+      ctx.strokeStyle = '#fbbf24';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      let started = false;
+      for (let i = 0; i < times.length; i++) {
+        const cv = cmdArr[i];
+        if (cv === null) {
+          started = false;
+          continue;
+        }
+        const x = toX(times[i]);
+        const y = toY(cv);
+        if (!started || (i > 0 && cmdArr[i - 1] !== null && Math.abs(cv - cmdArr[i - 1]!) > 180)) {
+          ctx.moveTo(x, y);
+          started = true;
+        } else {
+          ctx.lineTo(x, y);
+        }
+      }
+      ctx.stroke();
+    }
     ctx.restore();
 
     ctx.fillStyle = '#e2e8f0';

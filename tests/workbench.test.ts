@@ -823,3 +823,61 @@ test('Deviation is same-algorithm baseline, handles wrap, weight arrays are actu
   assert.ok(comparisonRows(b0,b4,b0,b4).every(r=>r.standardDeviation.every(v=>Math.abs(v)<1e-10)&&r.robustDeviation.every(v=>Math.abs(v)<1e-10)));
   assert.ok(a4.wyMean.every(v=>Number.isFinite(v)&&v>=0&&v<=1));assert.ok(a4.wxMean.every(v=>Number.isFinite(v)&&v>=0&&v<=1));
 });
+
+import {
+  alignCommandToSensorTimes,
+  computeCommandTrackingMetrics,
+  parseHostCommandCsv,
+} from '../src/data/commandMotionParser.ts';
+import { setHostCommandOverlay } from '../src/data/sharedRecording.ts';
+
+test('Host command CSV parser: parses BOM CSV, aligns with time offset and origin, and computes tracking RMSE', () => {
+  const cmdCsv = [
+    '\uFEFFelapsed_s,yaw_rpm,roll_rpm,pitch_rpm,yaw_accel_deg_s2,roll_accel_deg_s2,pitch_accel_deg_s2,yaw_position_deg,roll_position_deg,pitch_position_deg',
+    '0.000,0,0,0,0,0,0,0.0,0.0,0.0',
+    '0.500,1,0,0,0,0,0,3.0,1.5,-1.5',
+    '1.000,1,0,0,0,0,0,6.0,3.0,-3.0',
+  ].join('\n');
+
+  const cmd = parseHostCommandCsv(cmdCsv, '云台控制台指令记录_test.csv');
+  assert.equal(cmd.times.length, 3);
+  assert.deepEqual(cmd.yawDeg, [0, 3, 6]);
+
+  // Missing required columns rejected
+  assert.throws(() => parseHostCommandCsv('elapsed_s,yaw_rpm\n0,1\n', 'bad.csv'));
+
+  // Align onto sensor times [0.0, 0.5, 1.0, 1.5, 2.0] with offset = 0.5s and origin shift (+10 deg yaw)
+  const sensorTimes = [0.0, 0.5, 1.0, 1.5, 2.0];
+  const eskf = {
+    rollDeg: [2.0, 2.0, 3.5, 5.0, 5.0],
+    pitchDeg: [-1.0, -1.0, -2.5, -4.0, -4.0],
+    yawDeg: [10.0, 10.0, 13.0, 16.0, 16.0],
+  };
+  const aligned = alignCommandToSensorTimes(sensorTimes, eskf, cmd, 0.5, true);
+  assert.equal(aligned.overlapCount, 3);
+  assert.equal(aligned.yawDeg[0], null);
+  assert.equal(aligned.yawDeg[1], 10.0);
+  assert.equal(aligned.yawDeg[2], 13.0);
+  assert.equal(aligned.yawDeg[3], 16.0);
+  assert.equal(aligned.yawDeg[4], null);
+
+  const metrics = computeCommandTrackingMetrics(eskf.yawDeg, aligned.yawDeg);
+  assert.ok(metrics !== null);
+  assert.equal(metrics.overlapCount, 3);
+  assert.ok(metrics.rmseDeg < 1e-10);
+  assert.ok(metrics.maxAbsErrorDeg < 1e-10);
+
+  // SharedRecording overlay state update preserves dataset
+  const base = createSimulatedSixAxisDataset();
+  shareRecording({ dataset: base, origin: 'test-dual' });
+  let latest: any;
+  const off = observeRecording((r) => (latest = r));
+  setHostCommandOverlay(cmd, 0.5, true);
+  assert.equal(latest.dataset.id, base.id);
+  assert.equal(latest.commandTrajectory?.filename, '云台控制台指令记录_test.csv');
+  assert.equal(latest.commandTimeOffsetSec, 0.5);
+  assert.equal(latest.commandAlignOrigin, true);
+  setHostCommandOverlay(null);
+  assert.equal(latest.commandTrajectory, null);
+  off();
+});

@@ -1,3 +1,4 @@
+import { parseHostCommandCsv, type HostCommandTrajectory } from '../data/commandMotionParser';
 import {
   evaluateSixAxisCompleteness,
   guessSixAxisMapping,
@@ -18,11 +19,13 @@ export class SixAxisImportModal {
   private overlay: HTMLDivElement;
   private fileInput: HTMLInputElement;
   private binInput: HTMLInputElement;
+  private cmdInput: HTMLInputElement;
   private rawText = '';
   private filename = '';
   private headers: string[] = [];
   private binInspection: WitMotionBinInspection | null = null;
-  private onImported: (dataset: SixAxisDataset) => void;
+  private commandTrajectory: HostCommandTrajectory | null = null;
+  private onImported: (dataset: SixAxisDataset, commandTrajectory: HostCommandTrajectory | null) => void;
 
   private timeSelect!: HTMLSelectElement;
   private hostTimeSelect!: HTMLSelectElement;
@@ -48,9 +51,10 @@ export class SixAxisImportModal {
   private errorBox!: HTMLDivElement;
   private fileInfoLabel!: HTMLSpanElement;
   private binInfoLabel!: HTMLSpanElement;
+  private cmdInfoLabel!: HTMLSpanElement;
   private confirmBtn!: HTMLButtonElement;
 
-  constructor(onImported: (dataset: SixAxisDataset) => void) {
+  constructor(onImported: (dataset: SixAxisDataset, commandTrajectory: HostCommandTrajectory | null) => void) {
     this.onImported = onImported;
     this.overlay = document.createElement('div');
     this.overlay.className = 'modal-overlay hidden';
@@ -64,6 +68,11 @@ export class SixAxisImportModal {
     this.binInput.type = 'file';
     this.binInput.accept = '.bin,application/octet-stream';
     this.binInput.className = 'hidden';
+
+    this.cmdInput = document.createElement('input');
+    this.cmdInput.type = 'file';
+    this.cmdInput.accept = '.csv,text/csv';
+    this.cmdInput.className = 'hidden';
 
     this.overlay.innerHTML = `
       <div class="modal-card modal-wide" role="dialog" aria-modal="true" aria-label="导入六轴原始 IMU CSV">
@@ -84,6 +93,11 @@ export class SixAxisImportModal {
             <button type="button" class="btn" data-action="pick-bin">可选：选择配套 .bin 文件</button>
             <button type="button" class="btn btn-ghost btn-sm" data-action="clear-bin">清除 .bin</button>
             <span class="bin-info-label muted-text">未选择配套 .bin（仅 CSV 模式，不验证二进制完整性）</span>
+          </div>
+          <div class="import-file-row">
+            <button type="button" class="btn" data-action="pick-cmd">可选：选择上位机运动指令 CSV</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-action="clear-cmd">清除指令 CSV</button>
+            <span class="cmd-info-label muted-text">未选择上位机指令（云台控制台指令记录_*.csv，可选对齐叠加）</span>
           </div>
 
           <div class="import-preview-section">
@@ -196,6 +210,7 @@ export class SixAxisImportModal {
     this.errorBox = this.overlay.querySelector('.import-error-box')!;
     this.fileInfoLabel = this.overlay.querySelector('.file-info-label')!;
     this.binInfoLabel = this.overlay.querySelector('.bin-info-label')!;
+    this.cmdInfoLabel = this.overlay.querySelector('.cmd-info-label')!;
     this.confirmBtn = this.overlay.querySelector('[data-action="confirm"]')!;
 
     this.overlay.querySelectorAll('[data-action="close"]').forEach((btn) => {
@@ -214,6 +229,16 @@ export class SixAxisImportModal {
       this.binInspection = null;
       this.binInput.value = '';
       this.binInfoLabel.textContent = '未选择配套 .bin（仅 CSV 模式，不验证二进制完整性）';
+    });
+
+    this.overlay
+      .querySelector('[data-action="pick-cmd"]')!
+      .addEventListener('click', () => this.cmdInput.click());
+
+    this.overlay.querySelector('[data-action="clear-cmd"]')!.addEventListener('click', () => {
+      this.commandTrajectory = null;
+      this.cmdInput.value = '';
+      this.cmdInfoLabel.textContent = '未选择上位机指令（云台控制台指令记录_*.csv，可选对齐叠加）';
     });
 
     for (const el of [
@@ -252,6 +277,12 @@ export class SixAxisImportModal {
       if (!file) return;
       this.loadBinFile(file);
     });
+
+    this.cmdInput.addEventListener('change', () => {
+      const file = this.cmdInput.files?.[0];
+      if (!file) return;
+      this.loadCmdFile(file);
+    });
   }
 
   public open(): void {
@@ -270,6 +301,25 @@ export class SixAxisImportModal {
     this.binInspection = info;
     this.binInfoLabel.textContent =
       `${file.name}（时间包=${info.timePacketCount}, 加速度包=${info.accelPacketCount}, 角速度包=${info.gyroPacketCount}, 完整组=${info.completeGroupCount}, 校验错=${info.badChecksumCount}, 尾部截断=${info.truncatedTailBytes}B）`;
+  }
+
+  private async loadCmdFile(file: File): Promise<void> {
+    try {
+      const text = await file.text();
+      const parsed = parseHostCommandCsv(text, file.name);
+      this.commandTrajectory = parsed;
+      const dur = (parsed.times[parsed.times.length - 1] - parsed.times[0]).toFixed(1);
+      this.cmdInfoLabel.textContent = `${file.name}（${parsed.times.length} 点，时长 ${dur} s）`;
+      this.errorBox.classList.add('hidden');
+    } catch (err) {
+      this.commandTrajectory = null;
+      this.cmdInput.value = '';
+      this.cmdInfoLabel.textContent = '上位机指令解析失败，已忽略';
+      this.errorBox.classList.remove('hidden');
+      const strong = document.createElement('strong');
+      strong.textContent = `上位机指令 CSV 解析失败：${err instanceof Error ? err.message : String(err)}`;
+      this.errorBox.replaceChildren(strong);
+    }
   }
 
   private async loadFile(file: File): Promise<void> {
@@ -422,7 +472,7 @@ export class SixAxisImportModal {
       return;
     }
 
-    this.onImported(result.dataset);
+    this.onImported(result.dataset, this.commandTrajectory);
     this.close();
   }
 }
