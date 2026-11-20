@@ -1,0 +1,13 @@
+.comparison-demo { margin:12px 0; padding:12px; }
+.comparison-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin:8px 0; }
+.comparison-toolbar input { flex:1; min-width:120px; }
+#six-scenario { color:#fbbf24; }
+.comparison-demo canvas { width:100%; height:155px; display:block; }
+.comparison-demo summary { padding:12px 0; cursor:pointer; color:#c4b5fd; }
+.comparison-demo details p { color:#94a3b8; margin:4px 0 12px; }
+.nine-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
+.nine-cell { min-width:0; background:#0f172a; border-radius:8px; padding:8px; }
+.nine-cell h3 { font-size:12px; margin:0; color:#cbd5e1; }
+@media(max-width:850px) { .nine-grid { grid-template-columns:1fr; } }
+
+.charts-panel:has(#six-nine-grid[open]) > .charts-stack { display:none; }
