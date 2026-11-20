@@ -1,0 +1,4 @@
+# Preserve imported source bytes for provenance hashes.
+controls/gimbal-serial/**/*.py -text
+controls/gimbal-serial/*.py -text
+algorithms/matlab/*.m -text

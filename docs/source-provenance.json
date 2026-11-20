@@ -1,0 +1,46 @@
+{
+  "copied_without_changes": [
+    {
+      "source": "gimbal-serial/gimbal_safety.py",
+      "destination": "controls/gimbal-serial/gimbal_safety.py",
+      "sha256": "65871197fb7c4b7d51ec4c503e43b2d1ea8d8b5cb2ccb8c2bce5aef709a7da50"
+    },
+    {
+      "source": "gimbal-serial/periodic_motion.py",
+      "destination": "controls/gimbal-serial/periodic_motion.py",
+      "sha256": "893e4dabfc97e025ce7a5b44b922984431eb2ee2a025da8a8d993cdca0d3bd34"
+    },
+    {
+      "source": "gimbal-serial/periodic_motion_7cycles.py",
+      "destination": "controls/gimbal-serial/periodic_motion_7cycles.py",
+      "sha256": "ac9e4fdb5e52402bf96cd0d3079866ebbaef7bb7360cdbd5e3f2663ebd432d6a"
+    },
+    {
+      "source": "gimbal-serial/read_com4.py",
+      "destination": "controls/gimbal-serial/read_com4.py",
+      "sha256": "bdbaf3334b3982cb0d7dabd4e1b813743a8b59766ccb5948a22f77c85368dd39"
+    },
+    {
+      "source": "gimbal-serial/test_bgc.py",
+      "destination": "controls/gimbal-serial/test_bgc.py",
+      "sha256": "9f07324c5aa94cd654063253ebf221e85b04c6e8ae92c7a6d8ad446fb86fa43c"
+    },
+    {
+      "source": "gimbal-serial/test_three_axes.py",
+      "destination": "controls/gimbal-serial/test_three_axes.py",
+      "sha256": "89621579508c4bbedf9d07fd9872415f3812132e6f019bb1006628262275e5c9"
+    },
+    {
+      "source": "gimbal-serial/tests/test_gimbal_safety.py",
+      "destination": "controls/gimbal-serial/tests/test_gimbal_safety.py",
+      "sha256": "05b8e91ae5f600325318053d0e4702b6ee94e4f018f826a047a8f944f350b72e"
+    },
+    {
+      "source": "gimbal-serial/attitudegimbal.m",
+      "destination": "algorithms/matlab/attitudegimbal.m",
+      "sha256": "1593b01a1dfcbc29d72d9b14c4dc0b3265a1419c6d7bf742cc3feb9f16e03ae3"
+    }
+  ],
+  "firmware_status": "No independently supplied MCU firmware source found; Python serial control is host-side, not embedded firmware.",
+  "excluded": "New real device logs, CSV/XLSX exports, caches, manufacturer binaries and credentials are not added."
+}

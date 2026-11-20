@@ -1,3 +1,7 @@
+# 完整项目源码入口
+
+[项目结构与操作指南](docs/full-project-guide.md) · [云台控制](controls/gimbal-serial/README.md) · [MATLAB](algorithms/matlab/README.md) · [固件状态](firmware/README.md)
+
 # 三轴云台姿态可视化实验台
 
 基于 Vite + TypeScript + Three.js 构建的中文单页 Web 实验台，用于本地读取三轴姿态角 CSV 日志、3D 姿态回放、人工干扰注入（单帧尖峰 / 连续区间偏移）以及滤波算法对比。所有运行时资源随项目打包，不依赖后端服务、CAN 总线或网络请求。
