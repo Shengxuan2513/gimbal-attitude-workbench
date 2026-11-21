@@ -892,3 +892,40 @@ test('Chart viewport: anchored zoom, boundary-clamped pan, reset and data identi
  v.zoom(NaN);v.pan(Infinity);assert.equal(v.start,0);assert.equal(JSON.stringify(times),original);assert.ok(changes>0);
  v.reset();assert.equal(v.at(2),5);assert.equal(v.at(-2),0);
 });
+
+import {
+  getSixAxisVisibility,
+  onSixAxisVisibilityChange,
+  resetSixAxisVisibility,
+  toggleSixAxisSeries,
+} from '../src/data/sixAxisVisibility.ts';
+
+test('Six-axis line visibility: toggles individual colored series independently and resets cleanly', () => {
+  resetSixAxisVisibility();
+  let notifications = 0;
+  const off = onSixAxisVisibilityChange(() => notifications++);
+
+  assert.equal(getSixAxisVisibility().a0, true);
+  assert.equal(getSixAxisVisibility().wy, true);
+  assert.equal(getSixAxisVisibility().rawX, true);
+
+  assert.equal(toggleSixAxisSeries('a0'), false);
+  assert.equal(getSixAxisVisibility().a0, false);
+  assert.equal(getSixAxisVisibility().a4, true);
+
+  assert.equal(toggleSixAxisSeries('wy'), false);
+  assert.equal(getSixAxisVisibility().wy, false);
+  assert.equal(getSixAxisVisibility().wx, true);
+
+  assert.equal(toggleSixAxisSeries('rawX'), false);
+  assert.equal(getSixAxisVisibility().rawX, false);
+  assert.equal(getSixAxisVisibility().rawY, true);
+  assert.equal(getSixAxisVisibility().rawZ, true);
+
+  resetSixAxisVisibility();
+  assert.equal(getSixAxisVisibility().a0, true);
+  assert.equal(getSixAxisVisibility().wy, true);
+  assert.equal(getSixAxisVisibility().rawX, true);
+  assert.ok(notifications >= 4);
+  off();
+});
