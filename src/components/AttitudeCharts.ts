@@ -4,6 +4,7 @@ import {
   SERIES_ORDER,
   SERIES_STYLES,
 } from '../constants/seriesStyle';
+import { TimeViewport } from '../data/chartViewport';
 import { findNearestFrameIndex } from '../math/angles';
 import type { AppliedDisturbance, AxisKey, DataSourceId, SeriesData } from '../types/attitude';
 
@@ -27,12 +28,13 @@ const PAD_TOP = 24;
 const PAD_BOTTOM = 24;
 
 export class AttitudeCharts {
+  public readonly viewport = new TimeViewport();
   private charts: ChartConfig[] = [];
   private data: ChartDataInput | null = null;
   private hoverIndex: number | null = null;
-  private isDragging = false;
   private onSelectFrame: (idx: number) => void;
   private resizeObserver: ResizeObserver;
+  private offViewport: () => void;
 
   constructor(
     canvases: { roll: HTMLCanvasElement; pitch: HTMLCanvasElement; yaw: HTMLCanvasElement },
@@ -46,49 +48,118 @@ export class AttitudeCharts {
     ];
 
     this.resizeObserver = new ResizeObserver(() => this.renderAll());
+    this.offViewport = this.viewport.onChange(() => this.renderAll());
     for (const c of this.charts) {
       this.resizeObserver.observe(c.canvas.parentElement ?? c.canvas);
       this.bindEvents(c.canvas);
     }
   }
 
+  public zoomIn(): void {
+    this.viewport.zoom(0.65, 0.5);
+  }
+
+  public zoomOut(): void {
+    this.viewport.zoom(1 / 0.65, 0.5);
+  }
+
+  public resetZoom(): void {
+    this.viewport.reset();
+  }
+
+  private isZoomed(): boolean {
+    return this.viewport.end - this.viewport.start < this.viewport.max - this.viewport.min - 1e-6;
+  }
+
   private bindEvents(canvas: HTMLCanvasElement): void {
+    canvas.style.touchAction = 'none';
+    canvas.title = '滚轮缩放横轴时间；放大后拖动平移横轴；点击定位帧；双击恢复全图';
+
     const pickFrame = (clientX: number) => {
       if (!this.data || this.data.times.length === 0) return null;
       const rect = canvas.getBoundingClientRect();
       const x = clientX - rect.left;
       const plotW = Math.max(1, rect.width - PAD_LEFT - PAD_RIGHT);
       const ratio = Math.max(0, Math.min(1, (x - PAD_LEFT) / plotW));
-      const tMin = this.data.times[0];
-      const tMax = this.data.times[this.data.times.length - 1];
-      const targetT = tMin + ratio * (tMax - tMin);
+      const targetT = this.viewport.at(ratio);
       return findNearestFrameIndex(this.data.times, targetT);
     };
 
+    canvas.addEventListener(
+      'wheel',
+      (e) => {
+        if (!this.data || this.data.times.length < 2) return;
+        e.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const plotW = Math.max(1, rect.width - PAD_LEFT - PAD_RIGHT);
+        const anchor = Math.max(0, Math.min(1, (e.clientX - rect.left - PAD_LEFT) / plotW));
+        const factor = Math.exp(Math.max(-1, Math.min(1, e.deltaY * 0.002)));
+        this.viewport.zoom(factor, anchor);
+      },
+      { passive: false }
+    );
+
+    canvas.addEventListener('dblclick', (e) => {
+      e.preventDefault();
+      this.viewport.reset();
+    });
+
+    let drag: { id: number; x: number; startX: number; panMode: boolean; moved: boolean } | null = null;
+
     canvas.addEventListener('pointerdown', (e) => {
-      this.isDragging = true;
+      if (e.button !== 0) return;
+      const panMode = this.isZoomed();
+      drag = { id: e.pointerId, x: e.clientX, startX: e.clientX, panMode, moved: false };
       canvas.setPointerCapture(e.pointerId);
-      const idx = pickFrame(e.clientX);
-      if (idx !== null) this.onSelectFrame(idx);
+      if (!panMode) {
+        const idx = pickFrame(e.clientX);
+        if (idx !== null) this.onSelectFrame(idx);
+      } else {
+        canvas.style.cursor = 'grabbing';
+      }
     });
 
     canvas.addEventListener('pointermove', (e) => {
-      const idx = pickFrame(e.clientX);
-      if (this.isDragging && idx !== null) {
-        this.onSelectFrame(idx);
+      if (drag && e.pointerId === drag.id) {
+        const dx = e.clientX - drag.x;
+        if (!drag.moved && Math.abs(e.clientX - drag.startX) >= 4) {
+          drag.moved = true;
+        }
+        if (drag.panMode && drag.moved) {
+          const rect = canvas.getBoundingClientRect();
+          const plotW = Math.max(1, rect.width - PAD_LEFT - PAD_RIGHT);
+          drag.x = e.clientX;
+          this.viewport.pan((-dx / plotW) * (this.viewport.end - this.viewport.start));
+          return;
+        }
+        if (!drag.panMode) {
+          const idx = pickFrame(e.clientX);
+          if (idx !== null) this.onSelectFrame(idx);
+        }
       }
+      const idx = pickFrame(e.clientX);
       if (idx !== this.hoverIndex) {
         this.hoverIndex = idx;
         this.renderAll();
       }
     });
 
-    canvas.addEventListener('pointerup', (e) => {
-      this.isDragging = false;
+    const endDrag = (e: PointerEvent) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const wasPanClick = drag.panMode && !drag.moved;
+      drag = null;
+      canvas.style.cursor = this.isZoomed() ? 'grab' : 'crosshair';
       if (canvas.hasPointerCapture(e.pointerId)) {
         canvas.releasePointerCapture(e.pointerId);
       }
-    });
+      if (wasPanClick) {
+        const idx = pickFrame(e.clientX);
+        if (idx !== null) this.onSelectFrame(idx);
+      }
+    };
+
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
 
     canvas.addEventListener('pointerleave', () => {
       this.hoverIndex = null;
@@ -98,6 +169,10 @@ export class AttitudeCharts {
 
   public update(data: ChartDataInput): void {
     this.data = data;
+    if (data.times.length >= 2) {
+      const domainKey = `${data.times.length}:${data.times[0]}:${data.times[data.times.length - 1]}`;
+      this.viewport.setDomain(data.times, domainKey);
+    }
     this.renderAll();
   }
 
@@ -141,9 +216,12 @@ export class AttitudeCharts {
     }
 
     const { times, seriesMap, visibleSeries, currentIndex, appliedDisturbance } = this.data;
-    const tMin = times[0];
-    const tMax = times[times.length - 1];
+    const tMin = this.viewport.start;
+    const tMax = this.viewport.end;
     const tSpan = Math.max(1e-6, tMax - tMin);
+    canvas.dataset.timeStart = String(tMin);
+    canvas.dataset.timeEnd = String(tMax);
+    canvas.style.cursor = this.isZoomed() ? 'grab' : 'crosshair';
 
     // Compute Y bounds across visible series
     let yMin = Infinity;
@@ -210,6 +288,7 @@ export class AttitudeCharts {
 
     // X time ticks
     const xTicks = Math.min(10, Math.max(4, Math.floor(plotW / 90)));
+    const tickDecimals = Math.max(1, Math.min(4, Math.ceil(-Math.log10(Math.max(tSpan, 1e-6))) + 1));
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
     for (let i = 0; i <= xTicks; i++) {
@@ -221,26 +300,32 @@ export class AttitudeCharts {
       ctx.lineTo(x, PAD_TOP + plotH);
       ctx.stroke();
       ctx.fillStyle = '#94a3b8';
-      ctx.fillText(`${t.toFixed(1)}s`, x, PAD_TOP + plotH + 5);
+      ctx.fillText(`${t.toFixed(tickDecimals)}s`, x, PAD_TOP + plotH + 5);
     }
 
-    // Disturbance marker (interval band or spike pin)
+    // Disturbance marker (clipped to visible window)
     if (appliedDisturbance && appliedDisturbance.config.axis === axis) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(PAD_LEFT, PAD_TOP, plotW, plotH);
+      ctx.clip();
       if (appliedDisturbance.config.type === 'interval') {
         const x1 = toX(Math.max(tMin, appliedDisturbance.hitStartTime));
         const x2 = toX(Math.min(tMax, appliedDisturbance.hitEndTime));
-        ctx.fillStyle = 'rgba(239, 68, 68, 0.14)';
-        ctx.fillRect(x1, PAD_TOP, Math.max(2, x2 - x1), plotH);
-        ctx.strokeStyle = DISTURBANCE_MARKER_COLOR;
-        ctx.lineWidth = 1.2;
-        ctx.setLineDash([3, 3]);
-        ctx.beginPath();
-        ctx.moveTo(x1, PAD_TOP);
-        ctx.lineTo(x1, PAD_TOP + plotH);
-        ctx.moveTo(x2, PAD_TOP);
-        ctx.lineTo(x2, PAD_TOP + plotH);
-        ctx.stroke();
-        ctx.setLineDash([]);
+        if (x2 >= PAD_LEFT && x1 <= PAD_LEFT + plotW) {
+          ctx.fillStyle = 'rgba(239, 68, 68, 0.14)';
+          ctx.fillRect(x1, PAD_TOP, Math.max(2, x2 - x1), plotH);
+          ctx.strokeStyle = DISTURBANCE_MARKER_COLOR;
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(x1, PAD_TOP);
+          ctx.lineTo(x1, PAD_TOP + plotH);
+          ctx.moveTo(x2, PAD_TOP);
+          ctx.lineTo(x2, PAD_TOP + plotH);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       } else if (appliedDisturbance.hitIndices.length > 0) {
         const hitIdx = appliedDisturbance.hitIndices[0];
         const xHit = toX(times[hitIdx]);
@@ -266,6 +351,7 @@ export class AttitudeCharts {
           ctx.fill();
         }
       }
+      ctx.restore();
     }
 
     // Clip plot area for curves
@@ -306,7 +392,12 @@ export class AttitudeCharts {
     ctx.setLineDash([]);
     ctx.restore();
 
-    // Hover crosshair
+    // Hover crosshair & current time cursor (clipped to plot area)
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(PAD_LEFT, PAD_TOP, plotW, plotH);
+    ctx.clip();
+
     if (this.hoverIndex !== null && this.hoverIndex >= 0 && this.hoverIndex < times.length) {
       const xHover = toX(times[this.hoverIndex]);
       ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
@@ -340,6 +431,7 @@ export class AttitudeCharts {
       ctx.fill();
       ctx.stroke();
     }
+    ctx.restore();
 
     // Title & current frame readout in top-left of chart
     ctx.fillStyle = '#e2e8f0';
@@ -372,6 +464,7 @@ export class AttitudeCharts {
   }
 
   public dispose(): void {
+    this.offViewport();
     this.resizeObserver.disconnect();
   }
 }

@@ -1,5 +1,6 @@
 import { sixAxisViewport, bindChartNavigation, yRange, formatChartTime } from './chartNavigation';
 import type { AlignedCommandSeries } from '../data/commandMotionParser';
+import { getSixAxisVisibility, onSixAxisVisibilityChange } from '../data/sixAxisVisibility';
 import type { SixAxisEskfResult } from '../filters/sixAxisEskf';
 
 const PAD_LEFT = 56;
@@ -18,6 +19,7 @@ export class SixAxisEskfCharts {
   private a4: SixAxisEskfResult | null = null;
   private alignedCommand: AlignedCommandSeries | null = null;
   private resizeObserver: ResizeObserver;
+  private offVis: () => void;
 
   constructor(canvases: {
     roll: HTMLCanvasElement;
@@ -28,6 +30,7 @@ export class SixAxisEskfCharts {
     this.canvases = canvases;
     this.resizeObserver = new ResizeObserver(() => this.renderAll());
     const redraw = () => this.renderAll();
+    this.offVis = onSixAxisVisibilityChange(redraw);
     for (const c of Object.values(canvases)) {
       this.resizeObserver.observe(c.parentElement ?? c);
       bindChartNavigation(c, redraw, 56, 18);
@@ -88,6 +91,7 @@ export class SixAxisEskfCharts {
     const arr0 = this.a0[field];
     const arr4 = this.a4[field];
     const cmdArr = this.alignedCommand ? this.alignedCommand[field] : null;
+    const vis = getSixAxisVisibility();
     const tMin = sixAxisViewport.start;
     const tMax = sixAxisViewport.end;
     const tSpan = Math.max(1e-6, tMax - tMin);
@@ -95,15 +99,23 @@ export class SixAxisEskfCharts {
     let yMin = Infinity;
     let yMax = -Infinity;
     for (let i = 0; i < times.length; i++) {
-      if (arr0[i] < yMin) yMin = arr0[i];
-      if (arr0[i] > yMax) yMax = arr0[i];
-      if (arr4[i] < yMin) yMin = arr4[i];
-      if (arr4[i] > yMax) yMax = arr4[i];
-      const cv = cmdArr ? cmdArr[i] : null;
+      if (vis.a0) {
+        if (arr0[i] < yMin) yMin = arr0[i];
+        if (arr0[i] > yMax) yMax = arr0[i];
+      }
+      if (vis.a4) {
+        if (arr4[i] < yMin) yMin = arr4[i];
+        if (arr4[i] > yMax) yMax = arr4[i];
+      }
+      const cv = vis.cmd && cmdArr ? cmdArr[i] : null;
       if (cv !== null) {
         if (cv < yMin) yMin = cv;
         if (cv > yMax) yMax = cv;
       }
+    }
+    if (!Number.isFinite(yMin) || !Number.isFinite(yMax)) {
+      yMin = -10;
+      yMax = 10;
     }
     if (Math.abs(yMax - yMin) < 2) {
       const m = 0.5 * (yMin + yMax);
@@ -141,33 +153,37 @@ export class SixAxisEskfCharts {
     ctx.clip();
 
     // A0 Standard ESKF (emerald dashed)
-    ctx.strokeStyle = '#34d399';
-    ctx.lineWidth = 1.8;
-    ctx.setLineDash([5, 3]);
-    ctx.beginPath();
-    for (let i = 0; i < times.length; i++) {
-      const x = toX(times[i]);
-      const y = toY(arr0[i]);
-      if (i === 0 || Math.abs(arr0[i] - arr0[i - 1]) > 180) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    if (vis.a0) {
+      ctx.strokeStyle = '#34d399';
+      ctx.lineWidth = 1.8;
+      ctx.setLineDash([5, 3]);
+      ctx.beginPath();
+      for (let i = 0; i < times.length; i++) {
+        const x = toX(times[i]);
+        const y = toY(arr0[i]);
+        if (i === 0 || Math.abs(arr0[i] - arr0[i - 1]) > 180) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
 
     // A4 Two-sided Huber ESKF (purple solid)
-    ctx.strokeStyle = '#c084fc';
-    ctx.lineWidth = 2.0;
-    ctx.setLineDash([]);
-    ctx.beginPath();
-    for (let i = 0; i < times.length; i++) {
-      const x = toX(times[i]);
-      const y = toY(arr4[i]);
-      if (i === 0 || Math.abs(arr4[i] - arr4[i - 1]) > 180) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    if (vis.a4) {
+      ctx.strokeStyle = '#c084fc';
+      ctx.lineWidth = 2.0;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      for (let i = 0; i < times.length; i++) {
+        const x = toX(times[i]);
+        const y = toY(arr4[i]);
+        if (i === 0 || Math.abs(arr4[i] - arr4[i - 1]) > 180) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
 
     // Optional Host Command Trajectory (amber dotted)
-    if (cmdArr) {
+    if (vis.cmd && cmdArr) {
       ctx.strokeStyle = '#fbbf24';
       ctx.lineWidth = 1.8;
       ctx.setLineDash([3, 3]);
@@ -267,29 +283,35 @@ export class SixAxisEskfCharts {
     ctx.rect(PAD_LEFT, PAD_TOP, plotW, plotH);
     ctx.clip();
 
+    const vis = getSixAxisVisibility();
+
     // W_x mean (sky blue)
-    ctx.strokeStyle = '#60a5fa';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath();
-    for (let i = 0; i < times.length; i++) {
-      const x = toX(times[i]);
-      const y = toY(wx[i]);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    if (vis.wx) {
+      ctx.strokeStyle = '#60a5fa';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      for (let i = 0; i < times.length; i++) {
+        const x = toX(times[i]);
+        const y = toY(wx[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
 
     // W_y mean (amber)
-    ctx.strokeStyle = '#fbbf24';
-    ctx.lineWidth = 1.9;
-    ctx.beginPath();
-    for (let i = 0; i < times.length; i++) {
-      const x = toX(times[i]);
-      const y = toY(wy[i]);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
+    if (vis.wy) {
+      ctx.strokeStyle = '#fbbf24';
+      ctx.lineWidth = 1.9;
+      ctx.beginPath();
+      for (let i = 0; i < times.length; i++) {
+        const x = toX(times[i]);
+        const y = toY(wy[i]);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
     }
-    ctx.stroke();
     ctx.restore();
 
     ctx.fillStyle = '#e2e8f0';
@@ -304,6 +326,7 @@ export class SixAxisEskfCharts {
   }
 
   public dispose(): void {
+    this.offVis();
     this.resizeObserver.disconnect();
   }
 }

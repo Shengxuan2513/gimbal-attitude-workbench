@@ -1,4 +1,5 @@
 import { sixAxisViewport, bindChartNavigation, yRange, formatChartTime } from './chartNavigation';
+import { getSixAxisVisibility, onSixAxisVisibilityChange, type SixAxisSeriesKey } from '../data/sixAxisVisibility';
 import type { SixAxisDataset } from '../types/sixAxis';
 
 const PAD_LEFT = 62;
@@ -10,13 +11,14 @@ interface ChannelChartSpec {
   canvas: HTMLCanvasElement;
   title: string;
   unit: string;
-  keys: Array<{ key: 'gx' | 'gy' | 'gz' | 'ax' | 'ay' | 'az'; label: string; color: string }>;
+  keys: Array<{ key: 'gx' | 'gy' | 'gz' | 'ax' | 'ay' | 'az'; visKey: SixAxisSeriesKey; label: string; color: string }>;
 }
 
 export class SixAxisCharts {
   private specs: ChannelChartSpec[];
   private dataset: SixAxisDataset | null = null;
   private resizeObserver: ResizeObserver;
+  private offVis: () => void;
 
   constructor(canvases: { gyro: HTMLCanvasElement; accel: HTMLCanvasElement }) {
     this.specs = [
@@ -25,9 +27,9 @@ export class SixAxisCharts {
         title: '机体系原始三轴角速度 ω_b (rad/s)',
         unit: 'rad/s',
         keys: [
-          { key: 'gx', label: 'gx', color: '#f87171' },
-          { key: 'gy', label: 'gy', color: '#4ade80' },
-          { key: 'gz', label: 'gz', color: '#60a5fa' },
+          { key: 'gx', visKey: 'rawX', label: 'gx', color: '#f87171' },
+          { key: 'gy', visKey: 'rawY', label: 'gy', color: '#4ade80' },
+          { key: 'gz', visKey: 'rawZ', label: 'gz', color: '#60a5fa' },
         ],
       },
       {
@@ -35,15 +37,16 @@ export class SixAxisCharts {
         title: '机体系原始三轴比力 f_b (m/s²)',
         unit: 'm/s²',
         keys: [
-          { key: 'ax', label: 'ax', color: '#f87171' },
-          { key: 'ay', label: 'ay', color: '#4ade80' },
-          { key: 'az', label: 'az', color: '#60a5fa' },
+          { key: 'ax', visKey: 'rawX', label: 'ax', color: '#f87171' },
+          { key: 'ay', visKey: 'rawY', label: 'ay', color: '#4ade80' },
+          { key: 'az', visKey: 'rawZ', label: 'az', color: '#60a5fa' },
         ],
       },
     ];
 
     this.resizeObserver = new ResizeObserver(() => this.renderAll());
     const redraw = () => this.renderAll();
+    this.offVis = onSixAxisVisibilityChange(redraw);
     for (const s of this.specs) {
       this.resizeObserver.observe(s.canvas.parentElement ?? s.canvas);
       bindChartNavigation(s.canvas, redraw, 62, 18);
@@ -98,9 +101,11 @@ export class SixAxisCharts {
     const tMax = sixAxisViewport.end;
     const tSpan = Math.max(1e-6, tMax - tMin);
 
+    const vis = getSixAxisVisibility();
     let yMin = Infinity;
     let yMax = -Infinity;
     for (const k of keys) {
+      if (!vis[k.visKey]) continue;
       const arr = this.dataset[k.key];
       for (let i = 0; i < arr.length; i++) {
         if (arr[i] < yMin) yMin = arr[i];
@@ -164,6 +169,7 @@ export class SixAxisCharts {
     ctx.clip();
 
     for (const k of keys) {
+      if (!vis[k.visKey]) continue;
       const arr = this.dataset[k.key];
       ctx.strokeStyle = k.color;
       ctx.lineWidth = 1.7;
@@ -188,9 +194,10 @@ export class SixAxisCharts {
     let lx = PAD_LEFT + 250;
     ctx.font = '11px Consolas, monospace';
     for (const k of keys) {
-      ctx.fillStyle = k.color;
+      const active = vis[k.visKey];
+      ctx.fillStyle = active ? k.color : '#475569';
       ctx.fillRect(lx, 9, 12, 3);
-      ctx.fillStyle = '#cbd5e1';
+      ctx.fillStyle = active ? '#cbd5e1' : '#475569';
       ctx.fillText(k.label, lx + 16, 5);
       lx += 52;
     }
@@ -202,6 +209,7 @@ export class SixAxisCharts {
   }
 
   public dispose(): void {
+    this.offVis();
     this.resizeObserver.disconnect();
   }
 }

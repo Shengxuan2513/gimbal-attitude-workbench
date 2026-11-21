@@ -1,5 +1,6 @@
 import { sixAxisViewport, bindChartNavigation, yRange, resetChartView, formatChartTime } from './chartNavigation';
 import './SixAxisComparisonPanel.css';
+import { getSixAxisVisibility, onSixAxisVisibilityChange } from '../data/sixAxisVisibility';
 import { runStandardSixAxisEskf, runHuberSixAxisEskf, type SixAxisEskfResult } from '../filters/sixAxisEskf';
 import { comparisonRows } from '../data/comparisonView';
 import { setSoftwareInterference, type SharedRecording } from '../data/sharedRecording';
@@ -31,6 +32,7 @@ export class SixAxisComparisonPanel {
     this.element.querySelector('input')!.addEventListener('input',e=>{this.cursor=Number((e.target as HTMLInputElement).value);this.draw();});
     this.element.querySelector('#six-export-view')!.addEventListener('click',()=>this.export());
     const redraw=()=>this.draw();
+    onSixAxisVisibilityChange(redraw);
     this.element.querySelectorAll('canvas').forEach(canvas=>bindChartNavigation(canvas,redraw,48,12));
     const reset=document.createElement('button');reset.className='btn btn-sm';reset.textContent='恢复全图';reset.id='six-chart-reset';reset.onclick=resetChartView;this.element.querySelector('.comparison-toolbar')!.append(reset);
     const hint=document.createElement('span');hint.className='muted-text';hint.textContent='滚轮缩放 · 拖动平移 · Shift 调整纵轴';this.element.querySelector('.comparison-toolbar')!.append(hint);
@@ -57,7 +59,7 @@ export class SixAxisComparisonPanel {
     const times=this.record.dataset.times,w=canvas.parentElement!.clientWidth,h=155,dpr=Math.min(devicePixelRatio||1,2);
     canvas.width=w*dpr;canvas.height=h*dpr;const ctx=canvas.getContext('2d')!;ctx.scale(dpr,dpr);
     let low=weight?0:Infinity,high=weight?1:-Infinity;
-    if(!weight){for(const line of lines)for(const v of line.values){low=Math.min(low,v);high=Math.max(high,v);}const pad=Math.max(.02,(high-low)*.1);low-=pad;high+=pad;}
+    if(!weight){for(const line of lines)for(const v of line.values){low=Math.min(low,v);high=Math.max(high,v);}if(!Number.isFinite(low)||!Number.isFinite(high)){low=-1;high=1;}const pad=Math.max(.02,(high-low)*.1);low-=pad;high+=pad;}
     [low,high]=yRange(canvas,low,high);
     const x=(t:number)=>48+(t-sixAxisViewport.start)/Math.max(1e-9,sixAxisViewport.end-sixAxisViewport.start)*(w-60),y=(v:number)=>31+(high-v)/(high-low)*99;
     ctx.font='11px Microsoft YaHei,sans-serif';ctx.fillStyle='#94a3b8';ctx.fillText(title,48,14);
@@ -72,11 +74,21 @@ export class SixAxisComparisonPanel {
     this.element.querySelector('#six-visible-range')!.textContent=`时间窗 ${formatChartTime(sixAxisViewport.start)}–${formatChartTime(sixAxisViewport.end)} s`;
     const original=this.record.baseline??this.record.dataset;
     this.plot(this.element.querySelector('.comparison-input canvas')!,[{label:'原始',values:original.ax,color:'#94a3b8'},{label:'当前',values:this.record.dataset.ax,color:'#fbbf24'}],'加速度 X (m/s²)：灰=原始，黄=当前输入');
+    const vis = getSixAxisVisibility();
     const rows=comparisonRows(this.a0,this.a4,this.b0,this.b4),canvases=this.element.querySelectorAll<HTMLCanvasElement>('.nine-grid canvas');
     rows.forEach((row,i)=>{
-      this.plot(canvases[i*3],[{label:'标准',values:row.standard,color:'#34d399'},{label:'鲁棒',values:row.robust,color:'#c084fc'}],'绿虚线=标准，紫实线=鲁棒');
-      this.plot(canvases[i*3+1],[{label:'标准偏差',values:row.standardDeviation,color:'#34d399'},{label:'鲁棒偏差',values:row.robustDeviation,color:'#c084fc'}],'同算法：当前 − 未注入（角度环绕处理）');
-      this.plot(canvases[i*3+2],[{label:'Wy',values:this.a4!.wyMean,color:'#fbbf24'},{label:'Wx',values:this.a4!.wxMean,color:'#60a5fa'}],'黄虚线=Wy，蓝实线=Wx（各行同一全局值）',true);
+      const estLines: Line[] = [];
+      if (vis.a0) estLines.push({label:'标准',values:row.standard,color:'#34d399'});
+      if (vis.a4) estLines.push({label:'鲁棒',values:row.robust,color:'#c084fc'});
+      const devLines: Line[] = [];
+      if (vis.a0) devLines.push({label:'标准偏差',values:row.standardDeviation,color:'#34d399'});
+      if (vis.a4) devLines.push({label:'鲁棒偏差',values:row.robustDeviation,color:'#c084fc'});
+      const wLines: Line[] = [];
+      if (vis.wy) wLines.push({label:'Wy',values:this.a4!.wyMean,color:'#fbbf24'});
+      if (vis.wx) wLines.push({label:'Wx',values:this.a4!.wxMean,color:'#60a5fa'});
+      this.plot(canvases[i*3],estLines,'绿虚线=标准，紫实线=鲁棒');
+      this.plot(canvases[i*3+1],devLines,'同算法：当前 − 未注入（角度环绕处理）');
+      this.plot(canvases[i*3+2],wLines,'黄虚线=Wy，蓝实线=Wx（各行同一全局值）',true);
     });
     (this.element.querySelector('input') as HTMLInputElement).value=String(this.cursor);
     this.element.querySelector('#six-analysis-label')!.textContent=this.record.dataset.times[this.cursor].toFixed(3)+' s · '+(this.a4.statuses[this.cursor]==='SIX_AXIS_NOMINAL'?'正常更新':'仅传播（无观测更新）');

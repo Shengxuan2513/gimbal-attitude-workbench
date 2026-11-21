@@ -7,6 +7,13 @@ import {
   computeCommandTrackingMetrics,
   parseHostCommandCsv,
 } from './data/commandMotionParser';
+import {
+  SIX_AXIS_SERIES_META,
+  getSixAxisVisibility,
+  onSixAxisVisibilityChange,
+  resetSixAxisVisibility,
+  toggleSixAxisSeries,
+} from './data/sixAxisVisibility';
 import { readSensorAttitude } from './data/sensorAttitude';
 import { mountPresentationPage } from './components/PresentationPage';
 import './style.css';
@@ -254,7 +261,10 @@ function buildInitialAppHtml(): string {
               <span style="display:inline-block;width:12px;height:10px;background:rgba(239,68,68,0.25);border:1px dashed ${DISTURBANCE_MARKER_COLOR};"></span>
               干扰命中帧 / 区间
             </span>
-            <span>点击或拖动曲线跳到最近真实采样帧</span>
+            <button id="btn-pos-zoom-in" class="btn btn-sm" type="button">横轴放大 +</button>
+            <button id="btn-pos-zoom-out" class="btn btn-sm" type="button">横轴缩小 -</button>
+            <button id="btn-pos-zoom-reset" class="btn btn-sm" type="button">恢复全图</button>
+            <span id="pos-visible-range" class="muted-text mono">滚轮缩放横轴 · 放大后拖动平移</span>
           </div>
         </div>
         <div class="charts-stack">
@@ -317,6 +327,7 @@ function buildInitialAppHtml(): string {
             <h2 class="panel-title">六轴原始通道波形与统计（非姿态解算输出）</h2>
             <span class="muted-text">仅展示机体系原始 ω_b 与 f_b；同一记录可切换三维回放</span>
           </div>
+          <div id="six-raw-line-toggles" class="legend-toggles" style="margin-bottom:6px;"></div>
           <div class="charts-stack">
             <div class="chart-box six-chart-box"><canvas id="six-chart-gyro"></canvas></div>
             <div class="chart-box six-chart-box"><canvas id="six-chart-accel"></canvas></div>
@@ -358,6 +369,7 @@ function buildInitialAppHtml(): string {
             </label>
             <span id="six-cmd-status" class="muted-text mono">未叠加指令CSV（黄虚线=上位机指令估算）</span>
           </div>
+          <div id="six-eskf-line-toggles" class="legend-toggles" style="margin-bottom:6px;"></div>
           <div id="six-eskf-summary" class="ref-note mono">等待六轴数据导入后运行 A0 / A4 对比（无独立真值，Yaw 为相对零方向且存在漂移）。</div>
           <div class="charts-stack">
             <div class="chart-box"><canvas id="six-eskf-roll"></canvas></div>
@@ -1243,6 +1255,69 @@ function main(): void {
       chkSixCmdAlign.checked
     );
   });
+
+  const btnPosZoomIn = document.getElementById('btn-pos-zoom-in') as HTMLButtonElement;
+  const btnPosZoomOut = document.getElementById('btn-pos-zoom-out') as HTMLButtonElement;
+  const btnPosZoomReset = document.getElementById('btn-pos-zoom-reset') as HTMLButtonElement;
+  const posVisibleRangeEl = document.getElementById('pos-visible-range')!;
+  const updatePosRangeLabel = () => {
+    const span = charts.viewport.end - charts.viewport.start;
+    const dec = Math.max(1, Math.min(3, Math.ceil(-Math.log10(Math.max(span, 1e-6))) + 1));
+    posVisibleRangeEl.textContent = `横轴窗 ${charts.viewport.start.toFixed(dec)}–${charts.viewport.end.toFixed(dec)} s · 滚轮缩放/拖动平移`;
+  };
+  btnPosZoomIn.addEventListener('click', () => charts.zoomIn());
+  btnPosZoomOut.addEventListener('click', () => charts.zoomOut());
+  btnPosZoomReset.addEventListener('click', () => charts.resetZoom());
+  charts.viewport.onChange(updatePosRangeLabel);
+  updatePosRangeLabel();
+
+  const sixEskfTogglesEl = document.getElementById('six-eskf-line-toggles')!;
+  const sixRawTogglesEl = document.getElementById('six-raw-line-toggles')!;
+  const renderSixAxisLineToggles = () => {
+    const vis = getSixAxisVisibility();
+    sixEskfTogglesEl.replaceChildren();
+    sixRawTogglesEl.replaceChildren();
+
+    const makeToggleBtn = (meta: (typeof SIX_AXIS_SERIES_META)[number]) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `legend-pill${vis[meta.key] ? ' active' : ''}`;
+      btn.dataset.sixSeries = meta.key;
+      btn.setAttribute('aria-pressed', String(vis[meta.key]));
+      btn.style.opacity = vis[meta.key] ? '1' : '0.42';
+      btn.innerHTML = `<span style="display:inline-block;width:12px;height:3px;border-radius:2px;background:${meta.color};margin-right:6px;vertical-align:middle;"></span>${meta.label}`;
+      btn.addEventListener('click', () => toggleSixAxisSeries(meta.key));
+      return btn;
+    };
+
+    const labelEskf = document.createElement('span');
+    labelEskf.className = 'muted-text';
+    labelEskf.textContent = '曲线开关：';
+    labelEskf.style.marginRight = '4px';
+    sixEskfTogglesEl.appendChild(labelEskf);
+
+    const labelRaw = document.createElement('span');
+    labelRaw.className = 'muted-text';
+    labelRaw.textContent = '通道开关：';
+    labelRaw.style.marginRight = '4px';
+    sixRawTogglesEl.appendChild(labelRaw);
+
+    for (const meta of SIX_AXIS_SERIES_META) {
+      const btn = makeToggleBtn(meta);
+      if (meta.group === 'eskf') sixEskfTogglesEl.appendChild(btn);
+      else sixRawTogglesEl.appendChild(btn);
+    }
+
+    const showAllBtn = document.createElement('button');
+    showAllBtn.type = 'button';
+    showAllBtn.id = 'btn-six-series-show-all';
+    showAllBtn.className = 'btn btn-ghost btn-sm';
+    showAllBtn.textContent = '全部显示';
+    showAllBtn.addEventListener('click', () => resetSixAxisVisibility());
+    sixEskfTogglesEl.appendChild(showAllBtn);
+  };
+  onSixAxisVisibilityChange(renderSixAxisLineToggles);
+  renderSixAxisLineToggles();
 
   let navigationDataKey = "";
   observeRecording(record => {
